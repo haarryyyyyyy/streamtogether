@@ -1,0 +1,51 @@
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+build/
+android/app/build/
+android/build/
+.gradle/
+android/.gradle/
+
+# Gradle files
+.gradle/
+buildOutputCleanup/
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+.shelf/
+android/.idea/
+
+# Node.js
+node_modules/
+server/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Server build
+server/dist/
+
+# OS / Local Configuration
+.DS_Store
+Thumbs.db
+local.properties
+android/local.properties
+*.hprof

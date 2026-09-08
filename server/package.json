@@ -1,0 +1,21 @@
+{
+  "name": "watchtogether-server",
+  "version": "1.0.0",
+  "description": "Production-quality server-authoritative WebSocket synchronization backend for WatchTogether",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "serve": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/ws": "^8.5.13",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}

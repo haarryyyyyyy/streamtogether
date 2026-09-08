@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  watchtogether-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: watchtogether-backend
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - HOST=0.0.0.0
+      - NODE_ENV=production
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - watchtogether-net
+
+  nginx:
+    image: nginx:alpine
+    container_name: watchtogether-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - watchtogether-server
+    networks:
+      - watchtogether-net
+
+networks:
+  watchtogether-net:
+    driver: bridge
