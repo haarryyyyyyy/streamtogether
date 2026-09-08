@@ -191,8 +191,8 @@ function setupWebSocketServer(wss) {
               code = generateRoomCode();
             }
 
-            const initialMedia = data.mediaUrl || SAMPLE_MEDIA_CATALOG[0].url;
-            const initialTitle = data.mediaTitle || SAMPLE_MEDIA_CATALOG[0].title;
+            const initialMedia = data.mediaUrl || '';
+            const initialTitle = data.mediaTitle || 'Movie Stream';
 
             const room = {
               code: code,

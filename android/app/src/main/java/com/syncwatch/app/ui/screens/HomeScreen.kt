@@ -1,6 +1,9 @@
 package com.syncwatch.app.ui.screens
 
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -32,46 +35,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.syncwatch.app.data.local.UserPreferences
-import com.syncwatch.app.data.models.MediaCatalogItem
 import com.syncwatch.app.data.models.RecentRoom
 import com.syncwatch.app.ui.theme.*
+import com.syncwatch.app.utils.MediaUtils
 import java.text.SimpleDateFormat
 import java.util.*
-
-val SAMPLE_MOVIES = listOf(
-    MediaCatalogItem(
-        id = "big-buck-bunny",
-        title = "Big Buck Bunny (4K Open Movie)",
-        url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-        thumbnail = "",
-        durationSec = 596,
-        license = "Creative Commons 3.0"
-    ),
-    MediaCatalogItem(
-        id = "tears-of-steel",
-        title = "Tears of Steel (Blender VFX Sci-Fi)",
-        url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4",
-        thumbnail = "",
-        durationSec = 734,
-        license = "Creative Commons 3.0"
-    ),
-    MediaCatalogItem(
-        id = "sintel",
-        title = "Sintel (Blender Studio Animation)",
-        url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
-        thumbnail = "",
-        durationSec = 888,
-        license = "Creative Commons 3.0"
-    ),
-    MediaCatalogItem(
-        id = "elephants-dream",
-        title = "Elephants Dream (Open Movie)",
-        url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-        thumbnail = "",
-        durationSec = 654,
-        license = "Creative Commons 2.5"
-    )
-)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -164,7 +132,7 @@ fun HomeScreen(
                 )
 
                 Text(
-                    text = "Synchronized theater with friends • Zero friction",
+                    text = "Synchronized cinema with friends • Zero friction",
                     fontSize = 13.sp,
                     color = TextSecondary,
                     textAlign = TextAlign.Center,
@@ -410,110 +378,154 @@ fun HomeScreen(
         }
     }
 
-    // Modal Dialog: Create Room & Pick Media
+    // Modal Dialog: Create Room (Stream URL or Local File)
     if (showCreateDialog) {
-        var selectedMovie by remember { mutableStateOf(SAMPLE_MOVIES[0]) }
-        var isCustomUrl by remember { mutableStateOf(false) }
-        var customUrlInput by remember { mutableStateOf("") }
-        var customTitleInput by remember { mutableStateOf("") }
+        var selectedTab by remember { mutableStateOf(0) } // 0 = Stream URL, 1 = Local File
+        var streamUrlInput by remember { mutableStateOf("") }
+        var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
+        var selectedFileName by remember { mutableStateOf("") }
+
+        val filePickerLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.GetContent()
+        ) { uri: Uri? ->
+            if (uri != null) {
+                selectedFileUri = uri
+                selectedFileName = MediaUtils.getFileNameFromUri(context, uri)
+            }
+        }
+
+        val autoTitle = remember(selectedTab, streamUrlInput, selectedFileName) {
+            if (selectedTab == 0) {
+                if (streamUrlInput.isNotBlank()) MediaUtils.extractTitleFromUrl(streamUrlInput) else "Movie Stream"
+            } else {
+                if (selectedFileName.isNotBlank()) selectedFileName else "Local Movie"
+            }
+        }
 
         AlertDialog(
             onDismissRequest = { showCreateDialog = false },
             containerColor = DarkSurface,
             title = {
-                Text("Create Watch Room", fontWeight = FontWeight.Bold, color = TextPrimary)
+                Text("Select Movie to Stream", fontWeight = FontWeight.Bold, color = TextPrimary)
             },
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "Select a video to stream:",
-                        fontSize = 13.sp,
-                        color = TextSecondary,
-                        modifier = Modifier.padding(bottom = 12.dp)
-                    )
+                    // Mode Switcher Tabs
+                    TabRow(
+                        selectedTabIndex = selectedTab,
+                        containerColor = DarkSurfaceElevated,
+                        contentColor = AccentCyan,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .padding(bottom = 16.dp)
+                    ) {
+                        Tab(
+                            selected = selectedTab == 0,
+                            onClick = { selectedTab = 0 },
+                            text = { Text("🌐 Paste Link", fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+                        )
+                        Tab(
+                            selected = selectedTab == 1,
+                            onClick = { selectedTab = 1 },
+                            text = { Text("📁 Local File", fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+                        )
+                    }
 
-                    SAMPLE_MOVIES.forEach { movie ->
-                        val isSelected = !isCustomUrl && selectedMovie.id == movie.id
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .clickable {
-                                    isCustomUrl = false
-                                    selectedMovie = movie
-                                },
-                            shape = RoundedCornerShape(10.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) AccentIndigo.copy(alpha = 0.25f) else DarkSurfaceElevated
+                    if (selectedTab == 0) {
+                        // Stream URL Input
+                        Text(
+                            text = "Paste direct video or stream URL:",
+                            fontSize = 12.sp,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+
+                        OutlinedTextField(
+                            value = streamUrlInput,
+                            onValueChange = { streamUrlInput = it },
+                            label = { Text("Video Link (.mp4 / .m3u8 / .mkv)") },
+                            placeholder = { Text("https://example.com/movie.mp4") },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentCyan,
+                                unfocusedBorderColor = DarkBorder,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary,
+                                focusedContainerColor = DarkSurfaceElevated,
+                                unfocusedContainerColor = DarkSurfaceElevated
                             ),
-                            border = if (isSelected) CardDefaults.outlinedCardBorder().copy(brush = Brush.linearGradient(listOf(AccentCyan, AccentIndigo))) else null
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        if (streamUrlInput.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                color = DarkSurfaceElevated,
+                                shape = RoundedCornerShape(8.dp),
+                                border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(DarkBorder))
                             ) {
-                                RadioButton(
-                                    selected = isSelected,
-                                    onClick = {
-                                        isCustomUrl = false
-                                        selectedMovie = movie
-                                    },
-                                    colors = RadioButtonDefaults.colors(selectedColor = AccentCyan)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column {
-                                    Text(movie.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                                    Text("${movie.durationSec / 60} mins • ${movie.license}", fontSize = 11.sp, color = TextMuted)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Filled.Movie, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text("Detected Title:", fontSize = 10.sp, color = TextMuted)
+                                        Text(autoTitle, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                    }
                                 }
                             }
                         }
-                    }
+                    } else {
+                        // Local File Picker
+                        Text(
+                            text = "Select video from phone storage:",
+                            fontSize = 12.sp,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { filePickerLauncher.launch("video/*") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            border = ButtonDefaults.outlinedButtonBorder.copy(brush = Brush.linearGradient(listOf(AccentIndigo, AccentCyan)))
+                        ) {
+                            Icon(Icons.Outlined.FolderOpen, contentDescription = null, tint = AccentCyan)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (selectedFileName.isNotBlank()) "Change File" else "Choose Video File",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
 
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .clickable { isCustomUrl = true },
-                        shape = RoundedCornerShape(10.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isCustomUrl) AccentIndigo.copy(alpha = 0.25f) else DarkSurfaceElevated
-                        ),
-                        border = if (isCustomUrl) CardDefaults.outlinedCardBorder().copy(brush = Brush.linearGradient(listOf(AccentCyan, AccentIndigo))) else null
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                RadioButton(
-                                    selected = isCustomUrl,
-                                    onClick = { isCustomUrl = true },
-                                    colors = RadioButtonDefaults.colors(selectedColor = AccentCyan)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Custom Direct Stream URL (MP4/HLS)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                            }
-
-                            if (isCustomUrl) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                OutlinedTextField(
-                                    value = customTitleInput,
-                                    onValueChange = { customTitleInput = it },
-                                    label = { Text("Movie Title") },
-                                    placeholder = { Text("e.g. Open Video") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                OutlinedTextField(
-                                    value = customUrlInput,
-                                    onValueChange = { customUrlInput = it },
-                                    label = { Text("Video URL (.mp4 / .m3u8)") },
-                                    placeholder = { Text("https://example.com/stream.mp4") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                        if (selectedFileName.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                color = DarkSurfaceElevated,
+                                shape = RoundedCornerShape(8.dp),
+                                border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(DarkBorder))
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Filled.VideoFile, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text("Selected Movie:", fontSize = 10.sp, color = TextMuted)
+                                        Text(selectedFileName, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
                             }
                         }
                     }
@@ -522,15 +534,15 @@ fun HomeScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val finalUrl = if (isCustomUrl) customUrlInput.trim() else selectedMovie.url
-                        val finalTitle = if (isCustomUrl) (if (customTitleInput.isBlank()) "Custom Stream" else customTitleInput.trim()) else selectedMovie.title
-                        if (isCustomUrl && finalUrl.isBlank()) {
-                            Toast.makeText(context, "Please enter a valid URL", Toast.LENGTH_SHORT).show()
+                        val finalUrl = if (selectedTab == 0) streamUrlInput.trim() else selectedFileUri?.toString() ?: ""
+                        if (finalUrl.isBlank()) {
+                            val msg = if (selectedTab == 0) "Please paste a video link" else "Please select a video file"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                             return@Button
                         }
                         showCreateDialog = false
                         val cleanName = if (displayName.isBlank()) "Host" else displayName.trim()
-                        onCreateRoom(guestId, cleanName, finalUrl, finalTitle, serverUrl)
+                        onCreateRoom(guestId, cleanName, finalUrl, autoTitle, serverUrl)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)
                 ) {
@@ -575,7 +587,7 @@ fun HomeScreen(
                         value = tempServerUrl,
                         onValueChange = { tempServerUrl = it },
                         label = { Text("Server URL") },
-                        placeholder = { Text("ws://10.0.2.2:8080 or wss://domain.com") },
+                        placeholder = { Text("ws://<ORACLE_VM_IP>:8080 or wss://domain.com") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
