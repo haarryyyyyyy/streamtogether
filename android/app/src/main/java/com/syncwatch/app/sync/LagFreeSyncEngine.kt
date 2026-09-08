@@ -89,6 +89,20 @@ class LagFreeSyncEngine(
                 room.targetPositionSec
             }
 
+            // If player is actively buffering frames after seek or network load, wait for STATE_READY
+            if (exo.playbackState == Player.STATE_BUFFERING) {
+                _telemetry.value = SyncTelemetry(
+                    rttMs = rtt,
+                    clockOffsetMs = offset,
+                    driftMs = 0L,
+                    playbackSpeed = 1.0f,
+                    status = SyncStatus.BUFFERING,
+                    targetPositionSec = targetPosSec,
+                    currentPositionSec = currentPosSec
+                )
+                return
+            }
+
             // Synchronize Play / Pause state
             if (room.isPlaying && !exo.playWhenReady) {
                 exo.playWhenReady = true

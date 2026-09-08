@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
@@ -74,6 +75,9 @@ fun HomeScreen(
         onJoinRoom(cleanCode, guestId, cleanName, serverUrl)
     }
 
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val responsivePadding = if (screenWidthDp < 360) 14.dp else if (screenWidthDp < 600) 20.dp else 32.dp
+
     Scaffold(
         containerColor = CinemaDarkBg,
         topBar = {
@@ -92,15 +96,21 @@ fun HomeScreen(
             )
         }
     ) { padding ->
-        LazyColumn(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .padding(padding),
+            contentAlignment = Alignment.TopCenter
         ) {
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .widthIn(max = 580.dp)
+                    .padding(horizontal = responsivePadding),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                item {
+                    Spacer(modifier = Modifier.height(12.dp))
 
                 // Brand Logo & Header
                 Box(
@@ -383,6 +393,7 @@ fun HomeScreen(
             }
         }
     }
+}
 
     // Modal Dialog: Create Room (Stream URL or Local File)
     if (showCreateDialog) {

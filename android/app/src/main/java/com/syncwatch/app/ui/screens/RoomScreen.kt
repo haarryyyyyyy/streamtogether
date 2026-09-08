@@ -56,6 +56,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
@@ -153,10 +154,21 @@ fun RoomScreen(
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
 
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 15_000,
+                /* maxBufferMs = */ 50_000,
+                /* bufferForPlaybackMs = */ 1_000,
+                /* bufferForPlaybackAfterRebufferMs = */ 2_000
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
         ExoPlayer.Builder(context, renderersFactory)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .setSeekParameters(SeekParameters.CLOSEST_SYNC)
+            .setLoadControl(loadControl)
             .build().apply {
                 volume = 1.0f
                 playWhenReady = false
@@ -346,6 +358,17 @@ fun RoomScreen(
         modifier: Modifier = Modifier,
         isLandscapeMode: Boolean
     ) {
+        val screenWidthDp = LocalConfiguration.current.screenWidthDp
+        val isCompactScreen = screenWidthDp < 360
+        val isLargeScreen = screenWidthDp >= 600
+
+        val centerBtnSpacing = if (isCompactScreen) 16.dp else if (isLargeScreen) 44.dp else 28.dp
+        val playBtnSize = if (isCompactScreen) 50.dp else if (isLargeScreen) 74.dp else 64.dp
+        val playIconSize = if (isCompactScreen) 28.dp else if (isLargeScreen) 42.dp else 36.dp
+        val jumpBtnSize = if (isCompactScreen) 36.dp else if (isLargeScreen) 50.dp else 44.dp
+        val jumpIconSize = if (isCompactScreen) 20.dp else if (isLargeScreen) 28.dp else 24.dp
+        val maxTitleWidth = if (isLandscapeMode) (screenWidthDp * 0.42f).dp else (screenWidthDp * 0.45f).dp
+
         Box(
             modifier = modifier
                 .fillMaxSize()
@@ -387,7 +410,7 @@ fun RoomScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .align(Alignment.TopCenter)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                            .padding(horizontal = if (isCompactScreen) 8.dp else 12.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -404,12 +427,12 @@ fun RoomScreen(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = roomState.mediaTitle,
-                                fontSize = 14.sp,
+                                fontSize = if (isCompactScreen) 12.sp else 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = TextPrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.widthIn(max = if (isLandscapeMode) 300.dp else 160.dp)
+                                modifier = Modifier.widthIn(max = maxTitleWidth)
                             )
                         }
 
@@ -454,13 +477,13 @@ fun RoomScreen(
                     // CENTER PLAYBACK CONTROLS (Rewind 10s | Play/Pause | Forward 10s)
                     Row(
                         modifier = Modifier.align(Alignment.Center),
-                        horizontalArrangement = Arrangement.spacedBy(28.dp),
+                        horizontalArrangement = Arrangement.spacedBy(centerBtnSpacing),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Replay 10s
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .size(jumpBtnSize)
                                 .clip(CircleShape)
                                 .background(DarkSurface.copy(alpha = 0.6f))
                                 .clickable { handleReplay10() },
@@ -470,14 +493,14 @@ fun RoomScreen(
                                 imageVector = Icons.Filled.Replay10,
                                 contentDescription = "Replay 10s",
                                 tint = TextPrimary,
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(jumpIconSize)
                             )
                         }
 
                         // Play / Pause Radiant Center Button
                         Box(
                             modifier = Modifier
-                                .size(64.dp)
+                                .size(playBtnSize)
                                 .clip(CircleShape)
                                 .background(
                                     Brush.linearGradient(
@@ -492,14 +515,14 @@ fun RoomScreen(
                                 imageVector = if (isCurrentlyPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                                 contentDescription = "Play/Pause",
                                 tint = Color.Black,
-                                modifier = Modifier.size(36.dp)
+                                modifier = Modifier.size(playIconSize)
                             )
                         }
 
                         // Forward 10s
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .size(jumpBtnSize)
                                 .clip(CircleShape)
                                 .background(DarkSurface.copy(alpha = 0.6f))
                                 .clickable { handleForward10() },
@@ -509,7 +532,7 @@ fun RoomScreen(
                                 imageVector = Icons.Filled.Forward10,
                                 contentDescription = "Forward 10s",
                                 tint = TextPrimary,
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(jumpIconSize)
                             )
                         }
                     }
@@ -519,7 +542,7 @@ fun RoomScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .align(Alignment.BottomCenter)
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                            .padding(horizontal = if (isCompactScreen) 8.dp else 14.dp, vertical = 6.dp)
                     ) {
                         // Slider Scrubber
                         val displayPos = if (isUserScrubbing) scrubPositionSec.toDouble() else currentPosSec
@@ -556,13 +579,13 @@ fun RoomScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     text = formatTime(displayPos),
-                                    fontSize = 12.sp,
+                                    fontSize = if (isCompactScreen) 11.sp else 12.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = TextPrimary
                                 )
                                 Text(
                                     text = " / ${formatTime(totalDurationSec)}",
-                                    fontSize = 12.sp,
+                                    fontSize = if (isCompactScreen) 11.sp else 12.sp,
                                     color = TextSecondary
                                 )
                             }
@@ -591,6 +614,9 @@ fun RoomScreen(
         }
     }
 
+    val screenWidth = LocalConfiguration.current.screenWidthDp
+    val responsiveChatWidth = (screenWidth * 0.35f).coerceIn(280f, 440f).dp
+
     if (isLandscape) {
         // ==========================================
         // LANDSCAPE MODE: Fullscreen Theater View
@@ -613,7 +639,7 @@ fun RoomScreen(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .fillMaxHeight()
-                    .width(320.dp)
+                    .width(responsiveChatWidth)
                     .imePadding()
             ) {
                 ChatOverlay(

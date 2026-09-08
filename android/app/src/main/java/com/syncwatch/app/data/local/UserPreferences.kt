@@ -18,8 +18,8 @@ class UserPreferences(context: Context) {
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_RECENT_ROOMS = "recent_rooms"
         
-        // Default local and development server endpoint
-        const val DEFAULT_SERVER_URL = "ws://10.0.2.2:8080"
+        // Default embedded production server endpoint
+        const val DEFAULT_SERVER_URL = "wss://stream2gether.duckdns.org"
     }
 
     /**
@@ -50,7 +50,12 @@ class UserPreferences(context: Context) {
      * Stored Server URL.
      */
     fun getServerUrl(): String {
-        return prefs.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
+        val saved = prefs.getString(KEY_SERVER_URL, null)
+        return if (saved.isNullOrEmpty() || saved.contains("10.0.2.2") || saved.contains("localhost")) {
+            DEFAULT_SERVER_URL
+        } else {
+            saved
+        }
     }
 
     fun saveServerUrl(url: String) {
