@@ -13,8 +13,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -48,13 +51,10 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.TrackGroup
-import androidx.media3.common.TrackSelectionOverride
-import androidx.media3.common.TrackSelectionParameters
-import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import com.syncwatch.app.MainActivity
 import com.syncwatch.app.data.models.*
 import com.syncwatch.app.sync.LagFreeSyncEngine
 import com.syncwatch.app.ui.components.ChatOverlay
@@ -62,10 +62,12 @@ import com.syncwatch.app.ui.components.ExoPlayerView
 import com.syncwatch.app.ui.components.ParticipantListDialog
 import com.syncwatch.app.ui.theme.*
 import com.syncwatch.app.utils.MediaUtils
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class, UnstableApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun RoomScreen(
     roomState: RoomState,
@@ -100,15 +102,30 @@ fun RoomScreen(
         }
     }
 
-    // Hardware & Gesture Back Button in Landscape returns to Portrait
-    BackHandler(enabled = isLandscape) {
-        toggleOrientation()
+    var showExitConfirmDialog by remember { mutableStateOf(false) }
+    var showChangeMediaDialog by remember { mutableStateOf(false) }
+    var showAudioTrackDialog by remember { mutableStateOf(false) }
+    var isParticipantsOpen by remember { mutableStateOf(false) }
+    var isHostSettingsOpen by remember { mutableStateOf(false) }
+    var areSubtitlesEnabled by remember { mutableStateOf(true) }
+
+    var isLandscapeChatOpen by remember { mutableStateOf(false) }
+    var chatInputText by remember { mutableStateOf("") }
+    val chatListState = rememberLazyListState()
+
+    // Hardware & Gesture Back Button in Landscape returns to Portrait; in Portrait prompts exit
+    BackHandler(enabled = true) {
+        if (isLandscape) {
+            toggleOrientation()
+        } else {
+            showExitConfirmDialog = true
+        }
     }
 
     var localMediaOverrideUri by remember { mutableStateOf<String?>(null) }
     val effectiveMediaUrl = localMediaOverrideUri ?: roomState.mediaUrl
 
-    // Guest Local File Picker (for matching host's local video)
+    // Guest Local File Picker
     val guestFilePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -167,24 +184,6 @@ fun RoomScreen(
                 onBufferingChanged(isBuffering)
             }
 
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (canControlPlayback && !syncEngine.isApplyingSync) {
-                    val posSec = exoPlayer.currentPosition / 1000.0
-                    if (isPlaying) onPlay(posSec) else onPause(posSec)
-                }
-            }
-
-            override fun onPositionDiscontinuity(
-                oldPosition: Player.PositionInfo,
-                newPosition: Player.PositionInfo,
-                reason: Int
-            ) {
-                if (reason == Player.DISCONTINUITY_REASON_SEEK && canControlPlayback && !syncEngine.isApplyingSync) {
-                    val posSec = newPosition.positionMs / 1000.0
-                    onSeek(posSec)
-                }
-            }
-
             override fun onPlayerError(error: PlaybackException) {
                 error.printStackTrace()
             }
@@ -200,23 +199,79 @@ fun RoomScreen(
         }
     }
 
-    var isParticipantsOpen by remember { mutableStateOf(false) }
-    var isHostSettingsOpen by remember { mutableStateOf(false) }
-    var showAudioTrackDialog by remember { mutableStateOf(false) }
-    var areSubtitlesEnabled by remember { mutableStateOf(true) }
+    // State for Custom Video Controls
+    var isCurrentlyPlaying by remember { mutableStateOf(false) }
+    var currentPosSec by remember { mutableStateOf(0.0) }
+    var totalDurationSec by remember { mutableStateOf(0.0) }
+    var isUserScrubbing by remember { mutableStateOf(false) }
+    var scrubPositionSec by remember { mutableStateOf(0f) }
+    var controlsVisible by remember { mutableStateOf(true) }
+    var lastInteractionTime by remember { mutableStateOf(System.currentTimeMillis()) }
 
-    var isLandscapeChatOpen by remember { mutableStateOf(false) }
-    var chatInputText by remember { mutableStateOf("") }
-    val chatListState = rememberLazyListState()
+    // Realtime progress ticker and auto-hide timer
+    LaunchedEffect(exoPlayer) {
+        while (true) {
+            isCurrentlyPlaying = exoPlayer.isPlaying
+            if (!isUserScrubbing) {
+                currentPosSec = exoPlayer.currentPosition / 1000.0
+            }
+            val dur = exoPlayer.duration
+            totalDurationSec = if (dur > 0) dur / 1000.0 else 0.0
 
-    // Auto-scroll to latest chat message
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            chatListState.animateScrollToItem(messages.size - 1)
+            // Auto-hide controls after 3.5 seconds of inactivity if playing
+            if (controlsVisible && isCurrentlyPlaying && (System.currentTimeMillis() - lastInteractionTime > 3500)) {
+                controlsVisible = false
+            }
+
+            delay(250)
         }
     }
 
+    fun triggerUserInteraction() {
+        controlsVisible = true
+        lastInteractionTime = System.currentTimeMillis()
+    }
+
+    fun handlePlayPauseToggle() {
+        triggerUserInteraction()
+        if (!canControlPlayback) {
+            Toast.makeText(context, "Only host can control playback in Host Control mode", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val targetPlay = !exoPlayer.isPlaying
+        val pos = exoPlayer.currentPosition / 1000.0
+        if (targetPlay) {
+            exoPlayer.play()
+            onPlay(pos)
+        } else {
+            exoPlayer.pause()
+            onPause(pos)
+        }
+    }
+
+    fun handleSeekTo(targetSec: Double) {
+        triggerUserInteraction()
+        if (!canControlPlayback) {
+            Toast.makeText(context, "Only host can seek in Host Control mode", Toast.LENGTH_SHORT).show()
+            return
+        }
+        exoPlayer.seekTo((targetSec * 1000).toLong())
+        onSeek(targetSec)
+    }
+
+    fun handleReplay10() {
+        val target = (exoPlayer.currentPosition / 1000.0 - 10.0).coerceAtLeast(0.0)
+        handleSeekTo(target)
+    }
+
+    fun handleForward10() {
+        val dur = if (totalDurationSec > 0) totalDurationSec else Double.MAX_VALUE
+        val target = (exoPlayer.currentPosition / 1000.0 + 10.0).coerceAtMost(dur)
+        handleSeekTo(target)
+    }
+
     fun toggleSubtitles() {
+        triggerUserInteraction()
         val currentParams = exoPlayer.trackSelectionParameters
         val currentlyDisabled = currentParams.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
 
@@ -254,6 +309,271 @@ fun RoomScreen(
         context.startActivity(Intent.createChooser(shareIntent, "Share WatchTogether Room"))
     }
 
+    fun formatTime(seconds: Double): String {
+        val totalSec = Math.max(0L, seconds.toLong())
+        val hours = totalSec / 3600
+        val minutes = (totalSec % 3600) / 60
+        val secs = totalSec % 60
+        return if (hours > 0) {
+            String.format(Locale.getDefault(), "%02d:%02d:%02d", hours, minutes, secs)
+        } else {
+            String.format(Locale.getDefault(), "%02d:%02d", minutes, secs)
+        }
+    }
+
+    // =========================================================================
+    // CUSTOM DESIGNED VIDEO CONTROLS OVERLAY COMPOSABLE
+    // =========================================================================
+    @Composable
+    fun CustomVideoPlayerControlsOverlay(
+        modifier: Modifier = Modifier,
+        isLandscapeMode: Boolean
+    ) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {
+                    controlsVisible = !controlsVisible
+                    if (controlsVisible) lastInteractionTime = System.currentTimeMillis()
+                }
+        ) {
+            ExoPlayerView(
+                exoPlayer = exoPlayer,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // Animated Overlay (Top Bar, Center Buttons, Bottom Scrubber Bar)
+            AnimatedVisibility(
+                visible = controlsVisible,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Black.copy(alpha = 0.75f),
+                                    Color.Black.copy(alpha = 0.25f),
+                                    Color.Black.copy(alpha = 0.85f)
+                                )
+                            )
+                        )
+                ) {
+                    // TOP BAR
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter)
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = {
+                                if (isLandscapeMode) toggleOrientation() else showExitConfirmDialog = true
+                            }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Back",
+                                    tint = TextPrimary
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = roomState.mediaTitle,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = if (isLandscapeMode) 300.dp else 160.dp)
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Audio Tracks button
+                            IconButton(onClick = {
+                                triggerUserInteraction()
+                                showAudioTrackDialog = true
+                            }) {
+                                Icon(Icons.Filled.Audiotrack, contentDescription = "Audio Tracks", tint = AccentCyan)
+                            }
+
+                            // Subtitle CC button
+                            IconButton(onClick = { toggleSubtitles() }) {
+                                Icon(
+                                    imageVector = if (areSubtitlesEnabled) Icons.Filled.ClosedCaption else Icons.Outlined.ClosedCaptionDisabled,
+                                    contentDescription = "Subtitles",
+                                    tint = if (areSubtitlesEnabled) AccentCyan else TextMuted
+                                )
+                            }
+
+                            // Fullscreen Rotation Toggle
+                            IconButton(onClick = { toggleOrientation() }) {
+                                Icon(
+                                    imageVector = if (isLandscapeMode) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                                    contentDescription = "Toggle Fullscreen",
+                                    tint = TextPrimary
+                                )
+                            }
+
+                            if (isLandscapeMode) {
+                                IconButton(onClick = { isParticipantsOpen = true }) {
+                                    Icon(Icons.Outlined.People, contentDescription = "Participants", tint = TextPrimary)
+                                }
+                                IconButton(onClick = { isLandscapeChatOpen = !isLandscapeChatOpen }) {
+                                    Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Chat", tint = TextPrimary)
+                                }
+                            }
+                        }
+                    }
+
+                    // CENTER PLAYBACK CONTROLS (Rewind 10s | Play/Pause | Forward 10s)
+                    Row(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalArrangement = Arrangement.spacedBy(28.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Replay 10s
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(DarkSurface.copy(alpha = 0.6f))
+                                .clickable { handleReplay10() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Replay10,
+                                contentDescription = "Replay 10s",
+                                tint = TextPrimary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        // Play / Pause Radiant Center Button
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        listOf(AccentCyan, AccentIndigo)
+                                    )
+                                )
+                                .border(2.dp, Color.White.copy(alpha = 0.4f), CircleShape)
+                                .clickable { handlePlayPauseToggle() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isCurrentlyPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                contentDescription = "Play/Pause",
+                                tint = Color.Black,
+                                modifier = Modifier.size(36.dp)
+                            )
+                        }
+
+                        // Forward 10s
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(DarkSurface.copy(alpha = 0.6f))
+                                .clickable { handleForward10() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Forward10,
+                                contentDescription = "Forward 10s",
+                                tint = TextPrimary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+
+                    // BOTTOM BAR (Current Time | Slider Scrubber | Duration | PiP)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.BottomCenter)
+                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        // Slider Scrubber
+                        val displayPos = if (isUserScrubbing) scrubPositionSec.toDouble() else currentPosSec
+                        val maxDur = totalDurationSec.coerceAtLeast(1.0)
+
+                        Slider(
+                            value = (displayPos / maxDur).toFloat().coerceIn(0f, 1f),
+                            onValueChange = { frac ->
+                                triggerUserInteraction()
+                                isUserScrubbing = true
+                                scrubPositionSec = (frac * maxDur).toFloat()
+                            },
+                            onValueChangeFinished = {
+                                isUserScrubbing = false
+                                handleSeekTo(scrubPositionSec.toDouble())
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = AccentCyan,
+                                activeTrackColor = AccentCyan,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.25f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(24.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = formatTime(displayPos),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = " / ${formatTime(totalDurationSec)}",
+                                    fontSize = 12.sp,
+                                    color = TextSecondary
+                                )
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // Picture in Picture (PiP) button
+                                IconButton(
+                                    onClick = {
+                                        val mainActivity = context as? MainActivity
+                                        mainActivity?.enterPipMode()
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.PictureInPictureAlt,
+                                        contentDescription = "Picture in Picture",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (isLandscape) {
         // ==========================================
         // LANDSCAPE MODE: Fullscreen Theater View
@@ -263,58 +583,10 @@ fun RoomScreen(
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            ExoPlayerView(
-                exoPlayer = exoPlayer,
+            CustomVideoPlayerControlsOverlay(
+                isLandscapeMode = true,
                 modifier = Modifier.fillMaxSize()
             )
-
-            // Top overlay bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent)
-                        )
-                    )
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { toggleOrientation() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Return to Portrait", tint = TextPrimary)
-                    }
-                    Text(
-                        text = roomState.mediaTitle,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.widthIn(max = 240.dp)
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { showAudioTrackDialog = true }) {
-                        Icon(Icons.Filled.Audiotrack, contentDescription = "Audio Tracks", tint = AccentCyan)
-                    }
-                    IconButton(onClick = { toggleOrientation() }) {
-                        Icon(
-                            imageVector = Icons.Filled.FullscreenExit,
-                            contentDescription = "Exit Fullscreen",
-                            tint = TextPrimary
-                        )
-                    }
-                    IconButton(onClick = { isParticipantsOpen = true }) {
-                        Icon(Icons.Outlined.People, contentDescription = "Participants", tint = TextPrimary)
-                    }
-                    IconButton(onClick = { isLandscapeChatOpen = !isLandscapeChatOpen }) {
-                        Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Chat", tint = TextPrimary)
-                    }
-                }
-            }
 
             // Slide-in Landscape Chat
             AnimatedVisibility(
@@ -325,6 +597,7 @@ fun RoomScreen(
                     .align(Alignment.CenterEnd)
                     .fillMaxHeight()
                     .width(320.dp)
+                    .imePadding()
             ) {
                 ChatOverlay(
                     messages = messages,
@@ -335,52 +608,24 @@ fun RoomScreen(
         }
     } else {
         // =========================================================================
-        // PORTRAIT (VERTICAL) MODE: YouTube-Style Layout with Fixed Top Player & Live Chat
+        // PORTRAIT (VERTICAL) MODE: YouTube-Style Fixed Player & Bottom Live Chat
         // =========================================================================
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(CinemaDarkBg)
         ) {
-            // 1. YouTube-style Fixed Top Video Container (16:9 Aspect Ratio)
+            // 1. YouTube-style Top Video Container (16:9 Aspect Ratio)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
                     .background(Color.Black)
             ) {
-                ExoPlayerView(
-                    exoPlayer = exoPlayer,
+                CustomVideoPlayerControlsOverlay(
+                    isLandscapeMode = false,
                     modifier = Modifier.fillMaxSize()
                 )
-
-                // Top Floating Back & Horizontal Rotation Bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onLeaveRoom) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Leave Room",
-                            tint = TextPrimary
-                        )
-                    }
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Horizontal Fullscreen Rotation Button
-                        IconButton(onClick = { toggleOrientation() }) {
-                            Icon(
-                                imageVector = Icons.Filled.Fullscreen,
-                                contentDescription = "Rotate Fullscreen",
-                                tint = TextPrimary
-                            )
-                        }
-                    }
-                }
             }
 
             // Banner for Guest if Host is streaming a local video file
@@ -419,7 +664,6 @@ fun RoomScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    // Movie Title extracted from link / file
                     Text(
                         text = roomState.mediaTitle,
                         fontSize = 15.sp,
@@ -514,14 +758,6 @@ fun RoomScreen(
                                     }
                                 )
                             }
-                        }
-
-                        // Audio Tracks Selector
-                        IconButton(
-                            onClick = { showAudioTrackDialog = true },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(Icons.Filled.Audiotrack, contentDescription = "Audio Tracks", tint = AccentCyan, modifier = Modifier.size(18.dp))
                         }
 
                         // Participants Count
@@ -723,10 +959,44 @@ fun RoomScreen(
         }
     }
 
+    // Leave Room Confirmation Dialog
+    if (showExitConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitConfirmDialog = false },
+            containerColor = DarkSurface,
+            title = {
+                Text("Leave Watch Room?", fontWeight = FontWeight.Bold, color = TextPrimary)
+            },
+            text = {
+                Text(
+                    "Are you sure you want to leave this session? You will be disconnected from the synchronized stream.",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showExitConfirmDialog = false
+                        onLeaveRoom()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ErrorRed)
+                ) {
+                    Text("Leave Room", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitConfirmDialog = false }) {
+                    Text("Stay", color = TextSecondary)
+                }
+            }
+        )
+    }
+
     // Audio Track Selection Dialog
     if (showAudioTrackDialog) {
         val tracks = remember(exoPlayer.currentTracks) {
-            val audioTracks = mutableListOf<Pair<Int, String>>()
+            val audioTracks = mutableListOf<String>()
             for (group in exoPlayer.currentTracks.groups) {
                 if (group.type == C.TRACK_TYPE_AUDIO) {
                     for (i in 0 until group.length) {
@@ -734,7 +1004,7 @@ fun RoomScreen(
                         val lang = format.language ?: "Audio Track ${i + 1}"
                         val label = format.label ?: lang
                         val details = "$label (${format.sampleMimeType ?: "audio"})"
-                        audioTracks.add(Pair(i, details))
+                        audioTracks.add(details)
                     }
                 }
             }
@@ -750,7 +1020,7 @@ fun RoomScreen(
                     if (tracks.isEmpty()) {
                         Text("Default audio output active", color = TextSecondary, fontSize = 13.sp)
                     } else {
-                        tracks.forEach { (index, name) ->
+                        tracks.forEach { name ->
                             TextButton(
                                 onClick = {
                                     showAudioTrackDialog = false
@@ -789,7 +1059,6 @@ fun RoomScreen(
     if (isHostSettingsOpen && roomState.isHost) {
         var selectedMode by remember { mutableStateOf(roomState.controlMode) }
         var isLocked by remember { mutableStateOf(roomState.isLocked) }
-        var showChangeMediaDialog by remember { mutableStateOf(false) }
 
         AlertDialog(
             onDismissRequest = { isHostSettingsOpen = false },
@@ -893,96 +1162,97 @@ fun RoomScreen(
                 }
             }
         )
+    }
 
-        // Switch Media Dialog (Paste URL or Pick Local File)
-        if (showChangeMediaDialog) {
-            var selectedTab by remember { mutableStateOf(0) }
-            var newUrlInput by remember { mutableStateOf("") }
-            var newFileUri by remember { mutableStateOf<Uri?>(null) }
-            var newFileName by remember { mutableStateOf("") }
+    // Switch Media Dialog (Paste URL or Pick Local File) — Declared at top level so it never gets closed unexpectedly
+    if (showChangeMediaDialog) {
+        var selectedTab by remember { mutableStateOf(0) }
+        var newUrlInput by remember { mutableStateOf("") }
+        var newFileUri by remember { mutableStateOf<Uri?>(null) }
+        var newFileName by remember { mutableStateOf("") }
 
-            val changeFilePicker = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.OpenDocument()
-            ) { uri: Uri? ->
-                if (uri != null) {
-                    try {
-                        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        context.contentResolver.takePersistableUriPermission(uri, flags)
-                    } catch (e: Exception) {}
-                    newFileUri = uri
-                    newFileName = MediaUtils.getFileNameFromUri(context, uri)
-                }
+        val changeFilePicker = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument()
+        ) { uri: Uri? ->
+            if (uri != null) {
+                try {
+                    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    context.contentResolver.takePersistableUriPermission(uri, flags)
+                } catch (e: Exception) {}
+                newFileUri = uri
+                newFileName = MediaUtils.getFileNameFromUri(context, uri)
             }
-
-            val detectedTitle = remember(selectedTab, newUrlInput, newFileName) {
-                if (selectedTab == 0) {
-                    if (newUrlInput.isNotBlank()) MediaUtils.extractTitleFromUrl(newUrlInput) else "Movie Stream"
-                } else {
-                    if (newFileName.isNotBlank()) newFileName else "Local Movie"
-                }
-            }
-
-            AlertDialog(
-                onDismissRequest = { showChangeMediaDialog = false },
-                containerColor = DarkSurface,
-                title = { Text("Change Movie Stream", color = TextPrimary, fontWeight = FontWeight.Bold) },
-                text = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        TabRow(
-                            selectedTabIndex = selectedTab,
-                            containerColor = DarkSurfaceElevated,
-                            contentColor = AccentCyan,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .padding(bottom = 12.dp)
-                        ) {
-                            Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("🌐 Paste Link") })
-                            Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("📁 Local File") })
-                        }
-
-                        if (selectedTab == 0) {
-                            OutlinedTextField(
-                                value = newUrlInput,
-                                onValueChange = { newUrlInput = it },
-                                label = { Text("New Video URL") },
-                                placeholder = { Text("https://example.com/movie.mp4") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        } else {
-                            OutlinedButton(
-                                onClick = { changeFilePicker.launch(arrayOf("video/*", "video/mp4", "video/mkv", "video/webm", "video/avi")) },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(if (newFileName.isNotBlank()) newFileName else "Select Local Video")
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("New Title: $detectedTitle", fontSize = 12.sp, color = AccentCyan, fontWeight = FontWeight.Bold)
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            val finalUrl = if (selectedTab == 0) newUrlInput.trim() else newFileUri?.toString() ?: ""
-                            if (finalUrl.isNotBlank()) {
-                                onChangeMedia(finalUrl, detectedTitle)
-                                showChangeMediaDialog = false
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)
-                    ) {
-                        Text("Switch", color = Color.Black, fontWeight = FontWeight.Bold)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showChangeMediaDialog = false }) {
-                        Text("Cancel", color = TextSecondary)
-                    }
-                }
-            )
         }
+
+        val detectedTitle = remember(selectedTab, newUrlInput, newFileName) {
+            if (selectedTab == 0) {
+                if (newUrlInput.isNotBlank()) MediaUtils.extractTitleFromUrl(newUrlInput) else "Movie Stream"
+            } else {
+                if (newFileName.isNotBlank()) newFileName else "Local Movie"
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { showChangeMediaDialog = false },
+            containerColor = DarkSurface,
+            title = { Text("Change Movie Stream", color = TextPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    TabRow(
+                        selectedTabIndex = selectedTab,
+                        containerColor = DarkSurfaceElevated,
+                        contentColor = AccentCyan,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .padding(bottom = 12.dp)
+                    ) {
+                        Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("🌐 Paste Link") })
+                        Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("📁 Local File") })
+                    }
+
+                    if (selectedTab == 0) {
+                        OutlinedTextField(
+                            value = newUrlInput,
+                            onValueChange = { newUrlInput = it },
+                            label = { Text("New Video URL") },
+                            placeholder = { Text("https://example.com/movie.mp4") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        OutlinedButton(
+                            onClick = { changeFilePicker.launch(arrayOf("video/*", "video/mp4", "video/mkv", "video/webm", "video/avi")) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (newFileName.isNotBlank()) newFileName else "Select Local Video")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("New Title: $detectedTitle", fontSize = 12.sp, color = AccentCyan, fontWeight = FontWeight.Bold)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val finalUrl = if (selectedTab == 0) newUrlInput.trim() else newFileUri?.toString() ?: ""
+                        if (finalUrl.isNotBlank()) {
+                            onChangeMedia(finalUrl, detectedTitle)
+                            showChangeMediaDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)
+                ) {
+                    Text("Switch", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showChangeMediaDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
     }
 }
+
 

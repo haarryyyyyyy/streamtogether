@@ -21,15 +21,7 @@ fun ExoPlayerView(
         factory = { ctx ->
             PlayerView(ctx).apply {
                 player = exoPlayer
-                useController = true
-                setShowNextButton(false)
-                setShowPreviousButton(false)
-                setShowFastForwardButton(false)
-                setShowRewindButton(false)
-                setShowSubtitleButton(true)
-                controllerShowTimeoutMs = 2500
-                controllerHideOnTouch = true
-                controllerAutoShow = false
+                useController = false
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT

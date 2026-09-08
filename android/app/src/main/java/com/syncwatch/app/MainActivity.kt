@@ -132,6 +132,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun enterPipMode() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                val params = android.app.PictureInPictureParams.Builder()
+                    .setAspectRatio(android.util.Rational(16, 9))
+                    .build()
+                enterPictureInPictureMode(params)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (webSocketClient.roomState.value.roomId.isNotEmpty()) {
+            enterPipMode()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         webSocketClient.disconnect()

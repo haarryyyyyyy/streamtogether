@@ -60,26 +60,41 @@ class LagFreeSyncEngine(
     private fun evaluateAndApplySync(exo: Player, room: RoomState) {
         if (room.roomId.isEmpty()) return
 
-        isApplyingSync = true
-        try {
-            val serverNow = clockSyncManager.currentServerTimeMs()
+        val serverNow = clockSyncManager.currentServerTimeMs()
         val rtt = clockSyncManager.getRtt()
         val offset = clockSyncManager.getOffset()
+        val currentPosSec = exo.currentPosition / 1000.0
 
-        // Calculate expected target position (in seconds)
-        val targetPosSec = if (room.isPlaying && room.anchorServerTime > 0) {
-            val elapsedSec = (serverNow - room.anchorServerTime) / 1000.0
-            Math.max(0.0, room.targetPositionSec + elapsedSec)
-        } else {
-            room.targetPositionSec
+        if (room.isHost) {
+            // Host is playback authority; do not forcibly override play/pause or seek
+            _telemetry.value = SyncTelemetry(
+                rttMs = rtt,
+                clockOffsetMs = offset,
+                driftMs = 0L,
+                playbackSpeed = 1.0f,
+                status = SyncStatus.IN_SYNC,
+                targetPositionSec = currentPosSec,
+                currentPositionSec = currentPosSec
+            )
+            return
         }
 
-        // Synchronize Play / Pause state
-        if (room.isPlaying && !exo.playWhenReady) {
-            exo.playWhenReady = true
-        } else if (!room.isPlaying && exo.playWhenReady) {
-            exo.playWhenReady = false
-        }
+        isApplyingSync = true
+        try {
+            // Calculate expected target position (in seconds) for guests
+            val targetPosSec = if (room.isPlaying && room.anchorServerTime > 0) {
+                val elapsedSec = (serverNow - room.anchorServerTime) / 1000.0
+                Math.max(0.0, room.targetPositionSec + elapsedSec)
+            } else {
+                room.targetPositionSec
+            }
+
+            // Synchronize Play / Pause state on guest
+            if (room.isPlaying && !exo.playWhenReady) {
+                exo.playWhenReady = true
+            } else if (!room.isPlaying && exo.playWhenReady) {
+                exo.playWhenReady = false
+            }
 
         if (!room.isPlaying) {
             // Room is paused: Hard sync to exact pause position if drift > 300ms
