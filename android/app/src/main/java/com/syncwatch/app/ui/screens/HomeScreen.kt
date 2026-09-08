@@ -45,8 +45,10 @@ import com.syncwatch.app.data.network.ServerHealthChecker
 import com.syncwatch.app.ui.theme.*
 import com.syncwatch.app.utils.MediaUtils
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,6 +81,17 @@ fun HomeScreen(
 
     // Server health/connection status state
     var isServerConnected by remember { mutableStateOf<Boolean?>(null) }
+    var isServerChecking by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+
+    fun refreshServerStatus() {
+        coroutineScope.launch {
+            isServerChecking = true
+            isServerConnected = ServerHealthChecker.checkHealth(httpBaseUrl)
+            isServerChecking = false
+            Toast.makeText(context, if (isServerConnected == true) "Server Connected" else "Server Offline", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     LaunchedEffect(httpBaseUrl) {
         while (true) {
@@ -89,7 +102,11 @@ fun HomeScreen(
 
     fun validateAndJoin(targetCode: String) {
         val cleanCode = targetCode.trim().uppercase()
-        val cleanName = if (displayName.isBlank()) "Guest" else displayName.trim()
+        val cleanName = displayName.trim()
+        if (cleanName.isBlank()) {
+            Toast.makeText(context, "Please enter your name", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (cleanCode.isBlank()) {
             Toast.makeText(context, "Please enter a Room Code", Toast.LENGTH_SHORT).show()
             return
@@ -103,7 +120,69 @@ fun HomeScreen(
     val responsivePadding = if (screenWidthDp < 360) 14.dp else if (screenWidthDp < 600) 20.dp else 32.dp
 
     Scaffold(
-        containerColor = CinemaDarkBg
+        containerColor = CinemaDarkBg,
+        topBar = {
+            TopAppBar(
+                title = { },
+                actions = {
+                    // Top Right Fixed / Stick Server Connection Signal (Clickable to Refresh)
+                    Surface(
+                        modifier = Modifier
+                            .padding(end = 12.dp)
+                            .clickable { refreshServerStatus() },
+                        shape = RoundedCornerShape(20.dp),
+                        color = DarkSurfaceElevated,
+                        border = CardDefaults.outlinedCardBorder().copy(
+                            brush = androidx.compose.ui.graphics.SolidColor(
+                                when {
+                                    isServerChecking -> WarningAmber.copy(alpha = 0.5f)
+                                    isServerConnected == true -> SuccessGreen.copy(alpha = 0.5f)
+                                    isServerConnected == false -> ErrorRed.copy(alpha = 0.5f)
+                                    else -> TextMuted.copy(alpha = 0.3f)
+                                }
+                            )
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        when {
+                                            isServerChecking -> WarningAmber
+                                            isServerConnected == true -> SuccessGreen
+                                            isServerConnected == false -> ErrorRed
+                                            else -> WarningAmber
+                                        }
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = when {
+                                    isServerChecking -> "Checking..."
+                                    isServerConnected == true -> "Server Connected"
+                                    isServerConnected == false -> "Server Offline"
+                                    else -> "Checking..."
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = when {
+                                    isServerChecking -> WarningAmber
+                                    isServerConnected == true -> SuccessGreen
+                                    isServerConnected == false -> ErrorRed
+                                    else -> TextSecondary
+                                }
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+            )
+        }
     ) { padding ->
         Box(
             modifier = Modifier
@@ -119,7 +198,7 @@ fun HomeScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 item {
-                    Spacer(modifier = Modifier.height(28.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     // Brand Logo & Header
                     Box(
@@ -184,7 +263,7 @@ fun HomeScreen(
                                 prefs.saveDisplayName(it)
                             },
                             label = { Text("Display Name") },
-                            placeholder = { Text("e.g. Harry") },
+                            placeholder = { Text("Enter name") },
                             leadingIcon = {
                                 Icon(Icons.Outlined.Person, contentDescription = null, tint = AccentCyan)
                             },
@@ -244,7 +323,7 @@ fun HomeScreen(
                                 }
                             },
                             label = { Text("Enter 6-Digit Room Code") },
-                            placeholder = { Text("e.g. 849201") },
+                            placeholder = { Text("Enter room code") },
                             leadingIcon = {
                                 Icon(Icons.Outlined.MeetingRoom, contentDescription = null, tint = AccentIndigo)
                             },
@@ -287,7 +366,11 @@ fun HomeScreen(
 
                         OutlinedButton(
                             onClick = {
-                                val cleanName = if (displayName.isBlank()) "Host" else displayName.trim()
+                                val cleanName = displayName.trim()
+                                if (cleanName.isBlank()) {
+                                    Toast.makeText(context, "Please enter your name", Toast.LENGTH_SHORT).show()
+                                    return@OutlinedButton
+                                }
                                 prefs.saveDisplayName(cleanName)
                                 showCreateDialog = true
                             },
@@ -391,58 +474,7 @@ fun HomeScreen(
             }
 
             item {
-                Spacer(modifier = Modifier.height(56.dp))
-            }
-        }
-
-        // Bottom-left Server Connection Status Indicator
-        Surface(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 16.dp, bottom = 16.dp),
-            shape = RoundedCornerShape(20.dp),
-            color = DarkSurfaceElevated.copy(alpha = 0.9f),
-            border = CardDefaults.outlinedCardBorder().copy(
-                brush = androidx.compose.ui.graphics.SolidColor(
-                    when (isServerConnected) {
-                        true -> SuccessGreen.copy(alpha = 0.5f)
-                        false -> ErrorRed.copy(alpha = 0.5f)
-                        null -> TextMuted.copy(alpha = 0.3f)
-                    }
-                )
-            )
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(
-                            when (isServerConnected) {
-                                true -> SuccessGreen
-                                false -> ErrorRed
-                                null -> WarningAmber
-                            }
-                        )
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = when (isServerConnected) {
-                        true -> "Server Connected"
-                        false -> "Server Offline"
-                        null -> "Checking..."
-                    },
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = when (isServerConnected) {
-                        true -> SuccessGreen
-                        false -> ErrorRed
-                        null -> TextSecondary
-                    }
-                )
+                Spacer(modifier = Modifier.height(40.dp))
             }
         }
     }
@@ -608,6 +640,11 @@ fun HomeScreen(
             confirmButton = {
                 Button(
                     onClick = {
+                        val cleanName = displayName.trim()
+                        if (cleanName.isBlank()) {
+                            Toast.makeText(context, "Please enter your name first", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
                         val finalUrl = if (selectedTab == 0) streamUrlInput.trim() else selectedFileUri?.toString() ?: ""
                         if (finalUrl.isBlank()) {
                             val msg = if (selectedTab == 0) "Please paste a video link" else "Please select a video file"
@@ -615,7 +652,6 @@ fun HomeScreen(
                             return@Button
                         }
                         showCreateDialog = false
-                        val cleanName = if (displayName.isBlank()) "Host" else displayName.trim()
                         onCreateRoom(guestId, cleanName, finalUrl, autoTitle, serverUrl)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)

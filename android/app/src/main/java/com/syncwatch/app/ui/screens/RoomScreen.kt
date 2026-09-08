@@ -174,10 +174,10 @@ fun RoomScreen(
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 15_000,
-                /* maxBufferMs = */ 50_000,
-                /* bufferForPlaybackMs = */ 1_000,
-                /* bufferForPlaybackAfterRebufferMs = */ 2_000
+                /* minBufferMs = */ 25_000,
+                /* maxBufferMs = */ 65_000,
+                /* bufferForPlaybackMs = */ 2_500,
+                /* bufferForPlaybackAfterRebufferMs = */ 3_500
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -185,7 +185,7 @@ fun RoomScreen(
         ExoPlayer.Builder(context, renderersFactory)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
-            .setSeekParameters(SeekParameters.CLOSEST_SYNC)
+            .setSeekParameters(SeekParameters.EXACT)
             .setLoadControl(loadControl)
             .build().apply {
                 volume = 1.0f
@@ -302,8 +302,10 @@ fun RoomScreen(
             Toast.makeText(context, "Only host can seek in Host Control mode", Toast.LENGTH_SHORT).show()
             return
         }
+        syncEngine.isUserSeeking = true
         exoPlayer.seekTo((targetSec * 1000).toLong())
         onSeek(targetSec)
+        syncEngine.isUserSeeking = false
     }
 
     fun handleReplay10() {
@@ -571,10 +573,12 @@ fun RoomScreen(
                             onValueChange = { frac ->
                                 triggerUserInteraction()
                                 isUserScrubbing = true
+                                syncEngine.isUserSeeking = true
                                 scrubPositionSec = (frac * maxDur).toFloat()
                             },
                             onValueChangeFinished = {
                                 isUserScrubbing = false
+                                syncEngine.isUserSeeking = false
                                 handleSeekTo(scrubPositionSec.toDouble())
                             },
                             colors = SliderDefaults.colors(
