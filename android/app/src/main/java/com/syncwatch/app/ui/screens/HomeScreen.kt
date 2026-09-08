@@ -1,5 +1,7 @@
 package com.syncwatch.app.ui.screens
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -39,10 +41,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.syncwatch.app.data.local.UserPreferences
 import com.syncwatch.app.data.models.RecentRoom
+import com.syncwatch.app.data.network.ServerHealthChecker
 import com.syncwatch.app.ui.theme.*
 import com.syncwatch.app.utils.MediaUtils
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,14 +58,34 @@ fun HomeScreen(
     val prefs = remember { UserPreferences(context) }
     val focusManager = LocalFocusManager.current
 
+    // Ensure homepage is always locked to vertical (portrait) orientation when user comes to homepage
+    DisposableEffect(Unit) {
+        val activity = context as? Activity
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        onDispose {
+            // Restore sensor-based orientation when leaving home screen
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
     val guestId = remember { prefs.getOrCreateGuestId() }
     var displayName by remember { mutableStateOf(prefs.getDisplayName()) }
     var roomCodeInput by remember { mutableStateOf("") }
-    var serverUrl by remember { mutableStateOf(prefs.getServerUrl()) }
+    val serverUrl = remember { prefs.getServerUrl() }
+    val httpBaseUrl = remember { prefs.getHttpBaseUrl() }
     var recentRooms by remember { mutableStateOf(prefs.getRecentRooms()) }
 
     var showCreateDialog by remember { mutableStateOf(false) }
-    var showSettingsDialog by remember { mutableStateOf(false) }
+
+    // Server health/connection status state
+    var isServerConnected by remember { mutableStateOf<Boolean?>(null) }
+
+    LaunchedEffect(httpBaseUrl) {
+        while (true) {
+            isServerConnected = ServerHealthChecker.checkHealth(httpBaseUrl)
+            delay(10000) // Re-check every 10 seconds
+        }
+    }
 
     fun validateAndJoin(targetCode: String) {
         val cleanCode = targetCode.trim().uppercase()
@@ -79,78 +103,56 @@ fun HomeScreen(
     val responsivePadding = if (screenWidthDp < 360) 14.dp else if (screenWidthDp < 600) 20.dp else 32.dp
 
     Scaffold(
-        containerColor = CinemaDarkBg,
-        topBar = {
-            TopAppBar(
-                title = { },
-                actions = {
-                    IconButton(onClick = { showSettingsDialog = true }) {
-                        Icon(
-                            imageVector = Icons.Outlined.Settings,
-                            contentDescription = "Settings",
-                            tint = TextSecondary
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-            )
-        }
+        containerColor = CinemaDarkBg
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
-            contentAlignment = Alignment.TopCenter
+                .padding(padding)
         ) {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .widthIn(max = 580.dp)
-                    .padding(horizontal = responsivePadding),
+                    .padding(horizontal = responsivePadding)
+                    .align(Alignment.TopCenter),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 item {
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(28.dp))
 
-                // Brand Logo & Header
-                Box(
-                    modifier = Modifier
-                        .size(68.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.radialGradient(
-                                colors = listOf(AccentCyan.copy(alpha = 0.25f), AccentIndigo.copy(alpha = 0.15f))
+                    // Brand Logo & Header
+                    Box(
+                        modifier = Modifier
+                            .size(68.dp)
+                            .clip(CircleShape)
+                            .background(
+                                Brush.radialGradient(
+                                    colors = listOf(AccentCyan.copy(alpha = 0.25f), AccentIndigo.copy(alpha = 0.15f))
+                                )
                             )
+                            .border(1.5.dp, AccentCyan.copy(alpha = 0.6f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Movie,
+                            contentDescription = "StreamTogether Logo",
+                            tint = AccentCyan,
+                            modifier = Modifier.size(36.dp)
                         )
-                        .border(1.5.dp, AccentCyan.copy(alpha = 0.6f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Movie,
-                        contentDescription = "StreamTogether Logo",
-                        tint = AccentCyan,
-                        modifier = Modifier.size(36.dp)
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "StreamTogether",
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary,
+                        letterSpacing = 0.5.sp,
+                        modifier = Modifier.padding(bottom = 32.dp)
                     )
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "StreamTogether",
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimary,
-                    letterSpacing = 0.5.sp
-                )
-
-                Text(
-                    text = "Synchronized cinema with friends • Zero friction",
-                    fontSize = 13.sp,
-                    color = TextSecondary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 4.dp, bottom = 32.dp)
-                )
-            }
 
             // Display Name Input Card
             item {
@@ -389,7 +391,58 @@ fun HomeScreen(
             }
 
             item {
-                Spacer(modifier = Modifier.height(40.dp))
+                Spacer(modifier = Modifier.height(56.dp))
+            }
+        }
+
+        // Bottom-left Server Connection Status Indicator
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 16.dp, bottom = 16.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = DarkSurfaceElevated.copy(alpha = 0.9f),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = androidx.compose.ui.graphics.SolidColor(
+                    when (isServerConnected) {
+                        true -> SuccessGreen.copy(alpha = 0.5f)
+                        false -> ErrorRed.copy(alpha = 0.5f)
+                        null -> TextMuted.copy(alpha = 0.3f)
+                    }
+                )
+            )
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when (isServerConnected) {
+                                true -> SuccessGreen
+                                false -> ErrorRed
+                                null -> WarningAmber
+                            }
+                        )
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = when (isServerConnected) {
+                        true -> "Server Connected"
+                        false -> "Server Offline"
+                        null -> "Checking..."
+                    },
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = when (isServerConnected) {
+                        true -> SuccessGreen
+                        false -> ErrorRed
+                        null -> TextSecondary
+                    }
+                )
             }
         }
     }
@@ -572,80 +625,6 @@ fun HomeScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCreateDialog = false }) {
-                    Text("Cancel", color = TextSecondary)
-                }
-            }
-        )
-    }
-
-    // Modal Dialog: Settings
-    if (showSettingsDialog) {
-        var tempServerUrl by remember { mutableStateOf(serverUrl) }
-        var tempName by remember { mutableStateOf(displayName) }
-
-        AlertDialog(
-            onDismissRequest = { showSettingsDialog = false },
-            containerColor = DarkSurface,
-            title = {
-                Text("Connection & Settings", fontWeight = FontWeight.Bold, color = TextPrimary)
-            },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text("Guest Identity", fontSize = 12.sp, color = AccentCyan, fontWeight = FontWeight.SemiBold)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = tempName,
-                        onValueChange = { tempName = it },
-                        label = { Text("Display Name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Signaling Server WebSocket", fontSize = 12.sp, color = AccentIndigo, fontWeight = FontWeight.SemiBold)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(
-                        value = tempServerUrl,
-                        onValueChange = { tempServerUrl = it },
-                        label = { Text("Server URL") },
-                        placeholder = { Text("ws://<ORACLE_VM_IP>:8080 or wss://domain.com") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        AssistChip(
-                            onClick = { tempServerUrl = "ws://10.0.2.2:8080" },
-                            label = { Text("Emulator") }
-                        )
-                        AssistChip(
-                            onClick = { tempServerUrl = "ws://127.0.0.1:8080" },
-                            label = { Text("Localhost") }
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        displayName = tempName
-                        serverUrl = tempServerUrl
-                        prefs.saveDisplayName(tempName)
-                        prefs.saveServerUrl(tempServerUrl)
-                        showSettingsDialog = false
-                        Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)
-                ) {
-                    Text("Save", color = Color.Black, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSettingsDialog = false }) {
                     Text("Cancel", color = TextSecondary)
                 }
             }

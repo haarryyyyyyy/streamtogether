@@ -18,8 +18,8 @@ class UserPreferences(context: Context) {
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_RECENT_ROOMS = "recent_rooms"
         
-        // Default embedded production server endpoint
-        const val DEFAULT_SERVER_URL = "wss://stream2gether.duckdns.org"
+        // Default embedded production server endpoint (Cloudflare SSL Tunnel)
+        const val DEFAULT_SERVER_URL = "wss://legacy-space-packages-projection.trycloudflare.com"
     }
 
     /**
@@ -51,7 +51,7 @@ class UserPreferences(context: Context) {
      */
     fun getServerUrl(): String {
         val saved = prefs.getString(KEY_SERVER_URL, null)
-        return if (saved.isNullOrEmpty() || saved.contains("10.0.2.2") || saved.contains("localhost")) {
+        return if (saved.isNullOrEmpty() || saved.contains("10.0.2.2") || saved.contains("localhost") || saved.contains("duckdns")) {
             DEFAULT_SERVER_URL
         } else {
             saved

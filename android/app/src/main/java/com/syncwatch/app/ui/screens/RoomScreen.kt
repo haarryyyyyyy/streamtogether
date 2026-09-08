@@ -121,6 +121,24 @@ fun RoomScreen(
     var chatInputText by remember { mutableStateOf("") }
     val chatListState = rememberLazyListState()
 
+    // Transient in-player text overlay for incoming chats (lasts for 3 seconds)
+    var activeToastMessage by remember { mutableStateOf<String?>(null) }
+    var lastProcessedMessageCount by remember { mutableIntStateOf(messages.size) }
+
+    LaunchedEffect(messages.size) {
+        if (messages.size > lastProcessedMessageCount) {
+            val latestMsg = messages.lastOrNull()
+            if (latestMsg != null && latestMsg.text.isNotBlank() && !latestMsg.isSystem) {
+                activeToastMessage = latestMsg.text
+                delay(3000)
+                if (activeToastMessage == latestMsg.text) {
+                    activeToastMessage = null
+                }
+            }
+        }
+        lastProcessedMessageCount = messages.size
+    }
+
     // Background upload state for host sharing local video
     val uploadState by com.syncwatch.app.data.network.StreamUploadManager.uploadState.collectAsState()
 
@@ -608,6 +626,37 @@ fun RoomScreen(
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // Transient Clean In-Player Text Display (Only text displayed, lasting 3 seconds)
+            AnimatedVisibility(
+                visible = activeToastMessage != null,
+                enter = fadeIn() + slideInVertically(initialOffsetY = { -20 }),
+                exit = fadeOut() + slideOutVertically(targetOffsetY = { -20 }),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = if (controlsVisible) 60.dp else 24.dp)
+                    .padding(horizontal = 24.dp)
+            ) {
+                activeToastMessage?.let { textMsg ->
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(20.dp),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                        shadowElevation = 4.dp
+                    ) {
+                        Text(
+                            text = textMsg,
+                            color = Color.White,
+                            fontSize = if (isCompactScreen) 13.sp else 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
                     }
                 }
             }
