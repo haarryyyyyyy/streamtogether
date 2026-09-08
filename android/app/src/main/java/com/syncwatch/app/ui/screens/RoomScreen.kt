@@ -75,6 +75,7 @@ fun RoomScreen(
     messages: List<ChatMessage>,
     connectionStatus: ConnectionStatus,
     myGuestId: String,
+    localHostFileUri: Uri? = null,
     onPlay: (Double) -> Unit,
     onPause: (Double) -> Unit,
     onSeek: (Double) -> Unit,
@@ -113,6 +114,9 @@ fun RoomScreen(
     var chatInputText by remember { mutableStateOf("") }
     val chatListState = rememberLazyListState()
 
+    // Background upload state for host sharing local video
+    val uploadState by com.syncwatch.app.data.network.StreamUploadManager.uploadState.collectAsState()
+
     // Hardware & Gesture Back Button in Landscape returns to Portrait; in Portrait prompts exit
     BackHandler(enabled = true) {
         if (isLandscape) {
@@ -122,20 +126,11 @@ fun RoomScreen(
         }
     }
 
-    var localMediaOverrideUri by remember { mutableStateOf<String?>(null) }
-    val effectiveMediaUrl = localMediaOverrideUri ?: roomState.mediaUrl
-
-    // Guest Local File Picker
-    val guestFilePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            try {
-                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
-                context.contentResolver.takePersistableUriPermission(uri, flags)
-            } catch (e: Exception) {}
-            localMediaOverrideUri = uri.toString()
-            Toast.makeText(context, "Local video loaded for synchronization", Toast.LENGTH_SHORT).show()
+    val effectiveMediaUrl = remember(roomState.mediaUrl, localHostFileUri) {
+        if (roomState.isHost && localHostFileUri != null) {
+            localHostFileUri.toString()
+        } else {
+            roomState.mediaUrl
         }
     }
 
@@ -628,32 +623,80 @@ fun RoomScreen(
                 )
             }
 
-            // Banner for Guest if Host is streaming a local video file
-            if (!roomState.isHost && roomState.mediaUrl.startsWith("content://") && localMediaOverrideUri == null) {
+            // Stream Upload & Sharing Status Banner
+            if (roomState.isHost && uploadState is com.syncwatch.app.data.network.UploadState.Uploading) {
+                val upState = uploadState as com.syncwatch.app.data.network.UploadState.Uploading
                 Surface(
-                    color = WarningAmber.copy(alpha = 0.2f),
-                    shape = RoundedCornerShape(8.dp),
+                    color = DarkSurfaceElevated,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    border = CardDefaults.outlinedCardBorder().copy(brush = Brush.horizontalGradient(listOf(AccentCyan, AccentIndigo)))
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Filled.CloudUpload, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Sharing movie with guests...", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                            }
+                            Text("${(upState.progress * 100).toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = AccentCyan)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        LinearProgressIndicator(
+                            progress = { upState.progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                            color = AccentCyan,
+                            trackColor = Color.White.copy(alpha = 0.1f)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "${upState.bytesUploaded / (1024 * 1024)} MB / ${upState.totalBytes / (1024 * 1024)} MB • Live stream relayed to room guests",
+                            fontSize = 10.sp,
+                            color = TextMuted
+                        )
+                    }
+                }
+            } else if (roomState.isHost && uploadState is com.syncwatch.app.data.network.UploadState.Success) {
+                Surface(
+                    color = DarkSurfaceElevated,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(10.dp),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = WarningAmber)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Host streaming local movie", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
-                            Text("Select '${roomState.mediaTitle}' from storage", fontSize = 11.sp, color = TextSecondary)
-                        }
-                        Button(
-                            onClick = { guestFilePicker.launch(arrayOf("video/*", "video/mp4", "video/mkv", "video/webm", "video/avi")) },
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Text("Select", fontSize = 11.sp, color = Color.Black, fontWeight = FontWeight.Bold)
-                        }
+                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Movie shared with room • Live streaming to guests", fontSize = 11.sp, color = TextSecondary)
+                    }
+                }
+            } else if (!roomState.isHost && roomState.mediaUrl.contains("/api/v1/stream/")) {
+                Surface(
+                    color = DarkSurfaceElevated,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Sensors, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("📡 Streaming Host's shared movie in real-time", fontSize = 11.sp, color = TextSecondary)
                     }
                 }
             }

@@ -58,6 +58,20 @@ class UserPreferences(context: Context) {
     }
 
     /**
+     * Converts WebSocket URL (ws:// or wss://) to HTTP base URL (http:// or https://)
+     */
+    fun getHttpBaseUrl(): String {
+        val serverUrl = getServerUrl().trim()
+        val normalized = when {
+            serverUrl.startsWith("ws://", ignoreCase = true) -> serverUrl.replaceFirst("ws://", "http://", ignoreCase = true)
+            serverUrl.startsWith("wss://", ignoreCase = true) -> serverUrl.replaceFirst("wss://", "https://", ignoreCase = true)
+            serverUrl.startsWith("http://", ignoreCase = true) || serverUrl.startsWith("https://", ignoreCase = true) -> serverUrl
+            else -> "http://$serverUrl"
+        }
+        return normalized.trimEnd('/')
+    }
+
+    /**
      * Recently joined rooms history (stored locally).
      */
     fun getRecentRooms(): List<RecentRoom> {

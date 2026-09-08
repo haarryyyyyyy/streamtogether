@@ -13,9 +13,21 @@
 
 const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const PORT = parseInt(process.env.PORT, 10) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
+
+// Uploads storage for local video stream relay
+const UPLOADS_DIR = path.join(os.tmpdir(), 'watchtogether_streams');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// Map: roomCode -> { filePath, fileName, mimeType, size, createdAt }
+const roomStreams = new Map();
 
 // In-Memory Room Store
 // Room State Schema:
@@ -640,6 +652,17 @@ function setupWebSocketServer(wss) {
 
         if (room.peers.size === 0) {
           console.log(`[Room Cleaned] Room ${currentRoomCode} is empty. Removed.`);
+          // Clean up any uploaded stream files
+          const streamInfo = roomStreams.get(currentRoomCode);
+          if (streamInfo && streamInfo.filePath && fs.existsSync(streamInfo.filePath)) {
+            try {
+              fs.unlinkSync(streamInfo.filePath);
+              console.log(`[Stream Cleaned] Deleted stream file for room ${currentRoomCode}`);
+            } catch (e) {
+              console.error(`[Stream Cleanup Error]`, e.message);
+            }
+          }
+          roomStreams.delete(currentRoomCode);
           rooms.delete(currentRoomCode);
         } else {
           // If host left, assign next senior peer as host
@@ -744,6 +767,145 @@ const server = http.createServer((req, res) => {
       participantCount: room.peers.size,
       isLocked: room.isLocked
     }));
+    return;
+  }
+
+  // Stream Upload Endpoint (Host uploads local movie to server)
+  if (req.method === 'POST' && parsedUrl.pathname.startsWith('/api/v1/stream/upload/')) {
+    const rawCode = parsedUrl.pathname.replace('/api/v1/stream/upload/', '').split('/')[0].toUpperCase().trim();
+    if (!rawCode) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Room code required' }));
+      return;
+    }
+
+    const fileName = req.headers['x-file-name'] || 'stream.mp4';
+    const mimeType = req.headers['content-type'] || 'video/mp4';
+    const filePath = path.join(UPLOADS_DIR, `${rawCode}_stream.mp4`);
+
+    console.log(`[Stream Upload Start] Room ${rawCode} | File: ${fileName} | Type: ${mimeType}`);
+    const writeStream = fs.createWriteStream(filePath);
+
+    req.pipe(writeStream);
+
+    writeStream.on('finish', () => {
+      try {
+        const stats = fs.statSync(filePath);
+        roomStreams.set(rawCode, {
+          filePath: filePath,
+          fileName: decodeURIComponent(fileName),
+          mimeType: mimeType,
+          size: stats.size,
+          createdAt: Date.now()
+        });
+        console.log(`[Stream Upload Complete] Room ${rawCode} | Size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'success',
+          streamUrl: `/api/v1/stream/${rawCode}`,
+          size: stats.size
+        }));
+      } catch (err) {
+        console.error(`[Stream Stat Error]`, err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to finalize uploaded stream' }));
+      }
+    });
+
+    writeStream.on('error', (err) => {
+      console.error(`[Stream Upload Error] Room ${rawCode}:`, err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to write stream' }));
+    });
+    return;
+  }
+
+  // Stream Video Endpoint (Guests & Host stream video with HTTP 206 Byte Range Support)
+  if ((req.method === 'GET' || req.method === 'HEAD') && parsedUrl.pathname.startsWith('/api/v1/stream/')) {
+    const rawCode = parsedUrl.pathname.replace('/api/v1/stream/', '').split('/')[0].toUpperCase().trim();
+    const filePath = path.join(UPLOADS_DIR, `${rawCode}_stream.mp4`);
+
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Stream not found or expired' }));
+      return;
+    }
+
+    try {
+      const stat = fs.statSync(filePath);
+      const fileSize = stat.size;
+      const range = req.headers.range;
+      const streamInfo = roomStreams.get(rawCode);
+      const contentType = streamInfo?.mimeType || 'video/mp4';
+
+      if (range) {
+        // Parse HTTP Range: bytes=start-end
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+        if (start >= fileSize) {
+          res.writeHead(416, {
+            'Content-Range': `bytes */${fileSize}`,
+            'Content-Type': 'text/plain'
+          });
+          res.end();
+          return;
+        }
+
+        const chunksize = (end - start) + 1;
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunksize,
+          'Content-Type': contentType
+        });
+
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
+
+        const fileStream = fs.createReadStream(filePath, { start, end });
+        fileStream.on('error', (err) => {
+          console.error('[Stream Read Error]', err.message);
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+        req.on('close', () => {
+          fileStream.destroy();
+        });
+        fileStream.pipe(res);
+      } else {
+        // Entire file response
+        res.writeHead(200, {
+          'Content-Length': fileSize,
+          'Accept-Ranges': 'bytes',
+          'Content-Type': contentType
+        });
+
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
+
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.on('error', (err) => {
+          console.error('[Stream Read Error]', err.message);
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+        req.on('close', () => {
+          fileStream.destroy();
+        });
+        fileStream.pipe(res);
+      }
+    } catch (err) {
+      console.error('[Stream Serve Error]', err.message);
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    }
     return;
   }
 

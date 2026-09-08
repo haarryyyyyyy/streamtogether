@@ -63,12 +63,27 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    var localHostFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
+
                     // Keep sync engine aligned with room state
                     LaunchedEffect(roomState.roomId) {
                         if (roomState.roomId.isNotEmpty()) {
                             syncEngine.startSyncLoop(webSocketClient.roomState)
                             // Record to recent rooms history
                             userPreferences.addRecentRoom(roomState.roomId, roomState.mediaTitle)
+
+                            // If host created room with a local video file, initiate stream upload to server
+                            if (roomState.isHost && localHostFileUri != null) {
+                                val serverHttpUrl = userPreferences.getHttpBaseUrl()
+                                val streamUrl = "$serverHttpUrl/api/v1/stream/${roomState.roomId}"
+                                webSocketClient.sendChangeMedia(streamUrl, roomState.mediaTitle)
+                                com.syncwatch.app.data.network.StreamUploadManager.uploadVideo(
+                                    context = this@MainActivity,
+                                    roomCode = roomState.roomId,
+                                    videoUri = localHostFileUri!!,
+                                    serverHttpUrl = serverHttpUrl
+                                )
+                            }
                         } else {
                             syncEngine.stopSyncLoop()
                         }
@@ -81,6 +96,12 @@ class MainActivity : ComponentActivity() {
                                 userPreferences.saveDisplayName(displayName)
                                 userPreferences.saveServerUrl(serverUrl)
 
+                                if (mediaUrl.startsWith("content://") || mediaUrl.startsWith("file://")) {
+                                    localHostFileUri = android.net.Uri.parse(mediaUrl)
+                                } else {
+                                    localHostFileUri = null
+                                }
+
                                 webSocketClient.connect(serverUrl) {
                                     webSocketClient.createRoom(
                                         guestId = guestId,
@@ -92,6 +113,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onJoinRoom = { roomCode, guestId, displayName, serverUrl ->
                                 messages.clear()
+                                localHostFileUri = null
                                 userPreferences.saveDisplayName(displayName)
                                 userPreferences.saveServerUrl(serverUrl)
 
@@ -111,10 +133,29 @@ class MainActivity : ComponentActivity() {
                             messages = messages,
                             connectionStatus = connectionStatus,
                             myGuestId = webSocketClient.myGuestId,
+                            localHostFileUri = localHostFileUri,
                             onPlay = { pos -> webSocketClient.sendPlay(pos) },
                             onPause = { pos -> webSocketClient.sendPause(pos) },
                             onSeek = { pos -> webSocketClient.sendSeek(pos) },
-                            onChangeMedia = { url, title -> webSocketClient.sendChangeMedia(url, title) },
+                            onChangeMedia = { url, title ->
+                                if (url.startsWith("content://") || url.startsWith("file://")) {
+                                    val uri = android.net.Uri.parse(url)
+                                    localHostFileUri = uri
+                                    val serverHttpUrl = userPreferences.getHttpBaseUrl()
+                                    val streamUrl = "$serverHttpUrl/api/v1/stream/${roomState.roomId}"
+                                    webSocketClient.sendChangeMedia(streamUrl, title)
+                                    com.syncwatch.app.data.network.StreamUploadManager.uploadVideo(
+                                        context = this@MainActivity,
+                                        roomCode = roomState.roomId,
+                                        videoUri = uri,
+                                        serverHttpUrl = serverHttpUrl
+                                    )
+                                } else {
+                                    localHostFileUri = null
+                                    com.syncwatch.app.data.network.StreamUploadManager.cancelUpload()
+                                    webSocketClient.sendChangeMedia(url, title)
+                                }
+                            },
                             onSetControlMode = { mode -> webSocketClient.sendControlMode(mode) },
                             onSetRoomLock = { locked -> webSocketClient.sendRoomLock(locked) },
                             onKickParticipant = { targetId -> webSocketClient.sendKickParticipant(targetId) },
@@ -122,6 +163,8 @@ class MainActivity : ComponentActivity() {
                             onSendMessage = { text -> webSocketClient.sendChat(text) },
                             onUpdateSettings = { settings -> syncEngine.settings = settings },
                             onLeaveRoom = {
+                                localHostFileUri = null
+                                com.syncwatch.app.data.network.StreamUploadManager.cancelUpload()
                                 webSocketClient.disconnect()
                             },
                             syncEngine = syncEngine
