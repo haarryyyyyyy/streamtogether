@@ -65,8 +65,8 @@ class LagFreeSyncEngine(
         val offset = clockSyncManager.getOffset()
         val currentPosSec = exo.currentPosition / 1000.0
 
-        if (room.isHost) {
-            // Host is playback authority; do not forcibly override play/pause or seek
+        if (room.isHost && room.controlMode == "HOST_ONLY") {
+            // Host is playback authority in HOST_ONLY mode
             _telemetry.value = SyncTelemetry(
                 rttMs = rtt,
                 clockOffsetMs = offset,
@@ -81,7 +81,7 @@ class LagFreeSyncEngine(
 
         isApplyingSync = true
         try {
-            // Calculate expected target position (in seconds) for guests
+            // Calculate expected target position (in seconds)
             val targetPosSec = if (room.isPlaying && room.anchorServerTime > 0) {
                 val elapsedSec = (serverNow - room.anchorServerTime) / 1000.0
                 Math.max(0.0, room.targetPositionSec + elapsedSec)
@@ -89,70 +89,68 @@ class LagFreeSyncEngine(
                 room.targetPositionSec
             }
 
-            // Synchronize Play / Pause state on guest
+            // Synchronize Play / Pause state
             if (room.isPlaying && !exo.playWhenReady) {
                 exo.playWhenReady = true
             } else if (!room.isPlaying && exo.playWhenReady) {
                 exo.playWhenReady = false
             }
 
-        if (!room.isPlaying) {
-            // Room is paused: Hard sync to exact pause position if drift > 300ms
-            val currentPosSec = exo.currentPosition / 1000.0
-            val pauseDriftMs = ((targetPosSec - currentPosSec) * 1000).toLong()
-            if (Math.abs(pauseDriftMs) > 400 && targetPosSec > 0) {
-                exo.seekTo((targetPosSec * 1000).toLong())
+            if (!room.isPlaying) {
+                // Room is paused: Hard sync to exact pause position if drift > 250ms
+                val pauseDriftMs = ((targetPosSec - currentPosSec) * 1000).toLong()
+                if (Math.abs(pauseDriftMs) > 250 && targetPosSec > 0) {
+                    exo.seekTo((targetPosSec * 1000).toLong())
+                }
+                _telemetry.value = SyncTelemetry(
+                    rttMs = rtt,
+                    clockOffsetMs = offset,
+                    driftMs = pauseDriftMs,
+                    playbackSpeed = 1.0f,
+                    status = SyncStatus.IN_SYNC,
+                    targetPositionSec = targetPosSec,
+                    currentPositionSec = currentPosSec
+                )
+                return
             }
+
+            // Current ExoPlayer playback position
+            val driftMs = ((targetPosSec - currentPosSec) * 1000).toLong()
+            val absDrift = Math.abs(driftMs)
+
+            var newSpeed = 1.0f
+            var status = SyncStatus.IN_SYNC
+
+            if (absDrift <= 80) {
+                // Case 1: In Sync (< 80ms)
+                newSpeed = 1.0f
+                status = SyncStatus.IN_SYNC
+            } else if (absDrift <= 600) {
+                // Case 2: Smooth imperceptible speed adjustment (80ms - 600ms)
+                val adjustment = (driftMs.toFloat() / 10000.0f).coerceIn(-0.03f, 0.03f)
+                newSpeed = 1.0f + adjustment
+                status = if (driftMs > 0) SyncStatus.SPEEDING_UP else SyncStatus.SLOWING_DOWN
+            } else {
+                // Case 3: Macro drift / Seek (> 600ms) -> Instant Seek
+                exo.seekTo((targetPosSec * 1000).toLong())
+                newSpeed = 1.0f
+                status = SyncStatus.SEEKING
+            }
+
+            // Apply playback speed to ExoPlayer
+            if (Math.abs(exo.playbackParameters.speed - newSpeed) > 0.005f) {
+                exo.playbackParameters = PlaybackParameters(newSpeed)
+            }
+
             _telemetry.value = SyncTelemetry(
                 rttMs = rtt,
                 clockOffsetMs = offset,
-                driftMs = pauseDriftMs,
-                playbackSpeed = 1.0f,
-                status = SyncStatus.IN_SYNC,
+                driftMs = driftMs,
+                playbackSpeed = newSpeed,
+                status = status,
                 targetPositionSec = targetPosSec,
                 currentPositionSec = currentPosSec
             )
-            return
-        }
-
-        // Current ExoPlayer playback position
-        val currentPosSec = exo.currentPosition / 1000.0
-        val driftMs = ((targetPosSec - currentPosSec) * 1000).toLong()
-
-        var newSpeed = 1.0f
-        var status = SyncStatus.IN_SYNC
-        val absDrift = Math.abs(driftMs)
-
-        if (absDrift <= settings.syncToleranceMs) {
-            // Case 1: In Sync (< 50ms)
-            newSpeed = 1.0f
-            status = SyncStatus.IN_SYNC
-        } else if (settings.enableDynamicSpeed && absDrift <= 1500) {
-            // Case 2: Smooth speed ramping (50ms - 1500ms)
-            val adjustment = (driftMs.toFloat() / 2500.0f)
-            newSpeed = (1.0f + adjustment).coerceIn(settings.minSpeedMultiplier, settings.maxSpeedMultiplier)
-            status = if (driftMs > 0) SyncStatus.SPEEDING_UP else SyncStatus.SLOWING_DOWN
-        } else {
-            // Case 3: Macro drift (> 1500ms) -> Seek
-            exo.seekTo((targetPosSec * 1000).toLong())
-            newSpeed = 1.0f
-            status = SyncStatus.SEEKING
-        }
-
-        // Apply playback speed to ExoPlayer
-        if (Math.abs(exo.playbackParameters.speed - newSpeed) > 0.01f) {
-            exo.playbackParameters = PlaybackParameters(newSpeed)
-        }
-
-        _telemetry.value = SyncTelemetry(
-            rttMs = rtt,
-            clockOffsetMs = offset,
-            driftMs = driftMs,
-            playbackSpeed = newSpeed,
-            status = status,
-            targetPositionSec = targetPosSec,
-            currentPositionSec = currentPosSec
-        )
         } finally {
             isApplyingSync = false
         }

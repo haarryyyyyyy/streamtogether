@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,13 +48,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import com.syncwatch.app.MainActivity
 import com.syncwatch.app.data.models.*
 import com.syncwatch.app.sync.LagFreeSyncEngine
@@ -62,6 +67,7 @@ import com.syncwatch.app.ui.components.ExoPlayerView
 import com.syncwatch.app.ui.components.ParticipantListDialog
 import com.syncwatch.app.ui.theme.*
 import com.syncwatch.app.utils.MediaUtils
+import java.util.Locale
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
@@ -134,6 +140,8 @@ fun RoomScreen(
         }
     }
 
+    var tracksState by remember { mutableStateOf(Tracks.EMPTY) }
+
     // Hoisted ExoPlayer: Preserved across configuration/orientation changes
     val exoPlayer = remember(effectiveMediaUrl) {
         val renderersFactory = DefaultRenderersFactory(context)
@@ -148,6 +156,7 @@ fun RoomScreen(
         ExoPlayer.Builder(context, renderersFactory)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
+            .setSeekParameters(SeekParameters.CLOSEST_SYNC)
             .build().apply {
                 volume = 1.0f
                 playWhenReady = false
@@ -177,6 +186,19 @@ fun RoomScreen(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 val isBuffering = playbackState == Player.STATE_BUFFERING
                 onBufferingChanged(isBuffering)
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                tracksState = tracks
+                // Automatically ensure the first available audio track is selected
+                val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                if (audioGroups.isNotEmpty() && !audioGroups.any { it.isSelected }) {
+                    val firstGroup = audioGroups.first()
+                    exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                        .setOverrideForType(TrackSelectionOverride(firstGroup.mediaTrackGroup, listOf(0)))
+                        .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                        .build()
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -1292,6 +1314,187 @@ fun RoomScreen(
             dismissButton = {
                 TextButton(onClick = { showChangeMediaDialog = false }) {
                     Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
+
+    // Audio & Subtitle Track Selector Dialog
+    if (showAudioTrackDialog) {
+        val audioTracks = remember(tracksState) {
+            val list = mutableListOf<Triple<Int, Int, String>>() // groupIndex, trackIndex, label
+            for (gIdx in 0 until tracksState.groups.size) {
+                val group = tracksState.groups[gIdx]
+                if (group.type == C.TRACK_TYPE_AUDIO) {
+                    for (tIdx in 0 until group.length) {
+                        val format = group.getTrackFormat(tIdx)
+                        val lang = format.language ?: "und"
+                        val displayLang = if (lang != "und") Locale(lang).displayLanguage else ""
+                        val label = format.label ?: if (displayLang.isNotEmpty()) displayLang else "Track ${list.size + 1}"
+                        val channels = if (format.channelCount > 0) " • ${format.channelCount}ch" else ""
+                        val mime = format.sampleMimeType?.substringAfter('/') ?: ""
+                        val codec = if (mime.isNotEmpty()) " ($mime)" else ""
+                        val fullLabel = "$label$codec$channels"
+                        list.add(Triple(gIdx, tIdx, fullLabel))
+                    }
+                }
+            }
+            list
+        }
+
+        val subtitleTracks = remember(tracksState) {
+            val list = mutableListOf<Triple<Int, Int, String>>()
+            for (gIdx in 0 until tracksState.groups.size) {
+                val group = tracksState.groups[gIdx]
+                if (group.type == C.TRACK_TYPE_TEXT) {
+                    for (tIdx in 0 until group.length) {
+                        val format = group.getTrackFormat(tIdx)
+                        val lang = format.language ?: "und"
+                        val displayLang = if (lang != "und") Locale(lang).displayLanguage else ""
+                        val label = format.label ?: if (displayLang.isNotEmpty()) displayLang else "Subtitle ${list.size + 1}"
+                        list.add(Triple(gIdx, tIdx, label))
+                    }
+                }
+            }
+            list
+        }
+
+        AlertDialog(
+            onDismissRequest = { showAudioTrackDialog = false },
+            containerColor = DarkSurface,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Audiotrack, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(22.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Audio & Subtitle Tracks", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            },
+            text = {
+                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                    item {
+                        Text("AUDIO TRACKS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = AccentCyan)
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+
+                    if (audioTracks.isEmpty()) {
+                        item {
+                            Text("Default Audio Track (Embedded)", fontSize = 13.sp, color = TextSecondary, modifier = Modifier.padding(vertical = 4.dp))
+                        }
+                    } else {
+                        items(audioTracks) { (gIdx, tIdx, label) ->
+                            val isSelected = tracksState.groups.getOrNull(gIdx)?.isTrackSelected(tIdx) == true
+                            Surface(
+                                color = if (isSelected) AccentCyan.copy(alpha = 0.15f) else DarkSurfaceElevated,
+                                shape = RoundedCornerShape(8.dp),
+                                border = if (isSelected) BorderStroke(1.dp, AccentCyan) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp)
+                                    .clickable {
+                                        val group = tracksState.groups.getOrNull(gIdx)
+                                        if (group != null) {
+                                            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                                                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(tIdx)))
+                                                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                                                .build()
+                                            Toast.makeText(context, "Audio switched to $label", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(label, fontSize = 13.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, color = if (isSelected) AccentCyan else TextPrimary)
+                                    if (isSelected) {
+                                        Icon(Icons.Filled.Check, contentDescription = "Selected", tint = AccentCyan, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (subtitleTracks.isNotEmpty()) {
+                        item {
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text("SUBTITLES", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = AccentIndigo)
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+
+                        item {
+                            val isSubDisabled = exoPlayer.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+                            Surface(
+                                color = if (isSubDisabled) AccentIndigo.copy(alpha = 0.15f) else DarkSurfaceElevated,
+                                shape = RoundedCornerShape(8.dp),
+                                border = if (isSubDisabled) BorderStroke(1.dp, AccentIndigo) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp)
+                                    .clickable {
+                                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                            .build()
+                                        areSubtitlesEnabled = false
+                                        Toast.makeText(context, "Subtitles turned off", Toast.LENGTH_SHORT).show()
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Off", fontSize = 13.sp, fontWeight = if (isSubDisabled) FontWeight.Bold else FontWeight.Normal, color = if (isSubDisabled) AccentIndigo else TextPrimary)
+                                    if (isSubDisabled) {
+                                        Icon(Icons.Filled.Check, contentDescription = "Selected", tint = AccentIndigo, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+
+                        items(subtitleTracks) { (gIdx, tIdx, label) ->
+                            val isSelected = !exoPlayer.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT) &&
+                                    tracksState.groups.getOrNull(gIdx)?.isTrackSelected(tIdx) == true
+                            Surface(
+                                color = if (isSelected) AccentCyan.copy(alpha = 0.15f) else DarkSurfaceElevated,
+                                shape = RoundedCornerShape(8.dp),
+                                border = if (isSelected) BorderStroke(1.dp, AccentCyan) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp)
+                                    .clickable {
+                                        val group = tracksState.groups.getOrNull(gIdx)
+                                        if (group != null) {
+                                            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                                                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(tIdx)))
+                                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                                .build()
+                                            areSubtitlesEnabled = true
+                                            Toast.makeText(context, "Subtitles: $label", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(label, fontSize = 13.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, color = if (isSelected) AccentCyan else TextPrimary)
+                                    if (isSelected) {
+                                        Icon(Icons.Filled.Check, contentDescription = "Selected", tint = AccentCyan, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showAudioTrackDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)
+                ) {
+                    Text("Done", color = Color.Black, fontWeight = FontWeight.Bold)
                 }
             }
         )

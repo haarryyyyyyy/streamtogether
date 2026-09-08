@@ -117,7 +117,7 @@ fun HomeScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Movie,
-                        contentDescription = "WatchTogether Logo",
+                        contentDescription = "StreamTogether Logo",
                         tint = AccentCyan,
                         modifier = Modifier.size(36.dp)
                     )
@@ -126,7 +126,7 @@ fun HomeScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = "WatchTogether",
+                    text = "StreamTogether",
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
                     color = TextPrimary,
