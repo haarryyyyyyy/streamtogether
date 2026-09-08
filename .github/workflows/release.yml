@@ -75,17 +75,19 @@ jobs:
           name: ${{ steps.vars.outputs.release_name }}
           draft: false
           prerelease: false
+          make_latest: true
           files: release-output/*.apk
           body: |
             ## 🎬 WatchTogether — Release ${{ steps.vars.outputs.tag_name }}
 
-            ### ✨ What's New:
+            ### ✨ What's New in this Release:
+            - **Seamless Guest Playback**: Fixed player feedback loop; guest devices automatically synchronize and play without permission errors.
+            - **Extensive Audio Codec Support**: Automatic software fallback for AC3, EAC3, DTS, Opus, and multi-channel audio tracks.
+            - **6-Digit Numeric Room Codes**: Simple 6-digit room codes (e.g., `849201`) with direct numeric keypad input.
+            - **Fullscreen Rotation Button**: Instant toggle between YouTube-style Portrait (with live chat below) and Landscape Fullscreen theater view.
             - **Zero Onboarding Friction**: No registration, no login, no passwords. Open & watch in seconds!
-            - **Server-Authoritative Sync**: Intelligent NTP clock offset calibration and dynamic drift correction.
-            - **Room Control Modes**: Host-Only mode and Shared Control mode with real-time toggle.
-            - **Interactive Room Sharing**: 1-click room code copy and native Android share integration.
-            - **Live Text Chat**: Real-time theater messaging with host badges and unread indicator.
-            - **Recent Room History**: Instant 1-tap rejoin stored securely on device.
+            - **Server-Authoritative Sync**: NTP clock calibration with dynamic micro-drift speed ramping.
+            - **Live Text Chat & Host Controls**: Clean real-time messaging, host permissions, and kick management.
 
             ### 📲 Download & Install:
             Download the attached `WatchTogether-${{ steps.vars.outputs.tag_name }}.apk` below and install directly on your Android device!
