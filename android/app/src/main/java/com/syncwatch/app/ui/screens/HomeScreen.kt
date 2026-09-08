@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -224,15 +225,19 @@ fun HomeScreen(
 
                         OutlinedTextField(
                             value = roomCodeInput,
-                            onValueChange = { roomCodeInput = it.uppercase() },
-                            label = { Text("Enter Room Code") },
-                            placeholder = { Text("e.g. WATCH-8K42") },
+                            onValueChange = { input ->
+                                if (input.length <= 6 && input.all { char -> char.isDigit() }) {
+                                    roomCodeInput = input
+                                }
+                            },
+                            label = { Text("Enter 6-Digit Room Code") },
+                            placeholder = { Text("e.g. 849201") },
                             leadingIcon = {
                                 Icon(Icons.Outlined.MeetingRoom, contentDescription = null, tint = AccentIndigo)
                             },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.Characters,
+                                keyboardType = KeyboardType.Number,
                                 imeAction = ImeAction.Done
                             ),
                             keyboardActions = KeyboardActions(

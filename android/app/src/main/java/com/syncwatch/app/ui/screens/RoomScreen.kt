@@ -1,9 +1,11 @@
 package com.syncwatch.app.ui.screens
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
 import android.widget.Toast
@@ -47,7 +49,6 @@ import com.syncwatch.app.sync.LagFreeSyncEngine
 import com.syncwatch.app.ui.components.ChatOverlay
 import com.syncwatch.app.ui.components.ExoPlayerView
 import com.syncwatch.app.ui.components.ParticipantListDialog
-import com.syncwatch.app.ui.components.TelemetryCard
 import com.syncwatch.app.ui.theme.*
 import com.syncwatch.app.utils.MediaUtils
 import java.text.SimpleDateFormat
@@ -77,12 +78,20 @@ fun RoomScreen(
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val canControlPlayback = roomState.isHost || roomState.controlMode == "SHARED"
+
+    val activity = context as? Activity
+    fun toggleOrientation() {
+        if (isLandscape) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+    }
 
     var exoPlayerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
     var isParticipantsOpen by remember { mutableStateOf(false) }
     var isHostSettingsOpen by remember { mutableStateOf(false) }
-    var showTelemetry by remember { mutableStateOf(false) }
-    var showSubtitleDialog by remember { mutableStateOf(false) }
     var areSubtitlesEnabled by remember { mutableStateOf(true) }
 
     var isLandscapeChatOpen by remember { mutableStateOf(false) }
@@ -153,11 +162,17 @@ fun RoomScreen(
                 onBufferingChanged = { isBuffering ->
                     onBufferingChanged(isBuffering)
                 },
+                canControl = canControlPlayback,
+                isProgrammaticSync = { syncEngine.isApplyingSync },
                 onUserPlayPauseChanged = { isPlaying, posSec ->
-                    if (isPlaying) onPlay(posSec) else onPause(posSec)
+                    if (canControlPlayback) {
+                        if (isPlaying) onPlay(posSec) else onPause(posSec)
+                    }
                 },
                 onUserSeek = { posSec ->
-                    onSeek(posSec)
+                    if (canControlPlayback) {
+                        onSeek(posSec)
+                    }
                 },
                 modifier = Modifier.fillMaxSize()
             )
@@ -191,11 +206,11 @@ fun RoomScreen(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { toggleSubtitles() }) {
+                    IconButton(onClick = { toggleOrientation() }) {
                         Icon(
-                            imageVector = if (areSubtitlesEnabled) Icons.Filled.ClosedCaption else Icons.Outlined.ClosedCaptionDisabled,
-                            contentDescription = "Subtitles",
-                            tint = if (areSubtitlesEnabled) AccentCyan else TextMuted
+                            imageVector = Icons.Filled.FullscreenExit,
+                            contentDescription = "Portrait Mode",
+                            tint = TextPrimary
                         )
                     }
                     IconButton(onClick = { isParticipantsOpen = true }) {
@@ -249,16 +264,22 @@ fun RoomScreen(
                     onBufferingChanged = { isBuffering ->
                         onBufferingChanged(isBuffering)
                     },
+                    canControl = canControlPlayback,
+                    isProgrammaticSync = { syncEngine.isApplyingSync },
                     onUserPlayPauseChanged = { isPlaying, posSec ->
-                        if (isPlaying) onPlay(posSec) else onPause(posSec)
+                        if (canControlPlayback) {
+                            if (isPlaying) onPlay(posSec) else onPause(posSec)
+                        }
                     },
                     onUserSeek = { posSec ->
-                        onSeek(posSec)
+                        if (canControlPlayback) {
+                            onSeek(posSec)
+                        }
                     },
                     modifier = Modifier.fillMaxSize()
                 )
 
-                // Top Floating Back & Status Bar
+                // Top Floating Back & Horizontal Rotation Bar
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -275,34 +296,15 @@ fun RoomScreen(
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Subtitle Quick CC Button
-                        IconButton(onClick = { toggleSubtitles() }) {
+                        // Horizontal Fullscreen Rotation Button
+                        IconButton(onClick = { toggleOrientation() }) {
                             Icon(
-                                imageVector = if (areSubtitlesEnabled) Icons.Filled.ClosedCaption else Icons.Outlined.ClosedCaptionDisabled,
-                                contentDescription = "Subtitles",
-                                tint = if (areSubtitlesEnabled) AccentCyan else Color.White.copy(alpha = 0.6f)
-                            )
-                        }
-
-                        // Diagnostics Toggle
-                        IconButton(onClick = { showTelemetry = !showTelemetry }) {
-                            Icon(
-                                imageVector = Icons.Outlined.Speed,
-                                contentDescription = "Telemetry",
-                                tint = if (showTelemetry) AccentCyan else Color.White.copy(alpha = 0.6f)
+                                imageVector = Icons.Filled.Fullscreen,
+                                contentDescription = "Rotate Fullscreen",
+                                tint = TextPrimary
                             )
                         }
                     }
-                }
-
-                // Diagnostics Card
-                if (showTelemetry) {
-                    TelemetryCard(
-                        telemetry = telemetry,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = 48.dp, end = 8.dp)
-                    )
                 }
             }
 

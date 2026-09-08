@@ -27,6 +27,8 @@ class LagFreeSyncEngine(
 
     var settings: SyncSettings = SyncSettings()
     var isUserSeeking: Boolean = false
+    @Volatile
+    var isApplyingSync: Boolean = false
 
     fun attachPlayer(exoPlayer: Player) {
         this.player = exoPlayer
@@ -58,7 +60,9 @@ class LagFreeSyncEngine(
     private fun evaluateAndApplySync(exo: Player, room: RoomState) {
         if (room.roomId.isEmpty()) return
 
-        val serverNow = clockSyncManager.currentServerTimeMs()
+        isApplyingSync = true
+        try {
+            val serverNow = clockSyncManager.currentServerTimeMs()
         val rtt = clockSyncManager.getRtt()
         val offset = clockSyncManager.getOffset()
 
@@ -134,5 +138,8 @@ class LagFreeSyncEngine(
             targetPositionSec = targetPosSec,
             currentPositionSec = currentPosSec
         )
+        } finally {
+            isApplyingSync = false
+        }
     }
 }

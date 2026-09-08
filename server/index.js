@@ -80,14 +80,9 @@ const SAMPLE_MEDIA_CATALOG = [
   }
 ];
 
-// Generate formatted room codes like "WATCH-8K42" or "SYNC-7R91"
+// Generate 6-digit numeric room codes like "849201"
 function generateRoomCode() {
-  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-  let randomPart = '';
-  for (let i = 0; i < 4; i++) {
-    randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return `WATCH-${randomPart}`;
+  return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
 // Compute exact current playback position based on server clock
