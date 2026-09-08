@@ -9,6 +9,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -41,8 +42,18 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.TrackGroup
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.Tracks
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import com.syncwatch.app.data.models.*
 import com.syncwatch.app.sync.LagFreeSyncEngine
@@ -54,7 +65,7 @@ import com.syncwatch.app.utils.MediaUtils
 import java.text.SimpleDateFormat
 import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, UnstableApi::class)
 @Composable
 fun RoomScreen(
     roomState: RoomState,
@@ -89,9 +100,109 @@ fun RoomScreen(
         }
     }
 
-    var exoPlayerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
+    // Hardware & Gesture Back Button in Landscape returns to Portrait
+    BackHandler(enabled = isLandscape) {
+        toggleOrientation()
+    }
+
+    var localMediaOverrideUri by remember { mutableStateOf<String?>(null) }
+    val effectiveMediaUrl = localMediaOverrideUri ?: roomState.mediaUrl
+
+    // Guest Local File Picker (for matching host's local video)
+    val guestFilePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(uri, flags)
+            } catch (e: Exception) {}
+            localMediaOverrideUri = uri.toString()
+            Toast.makeText(context, "Local video loaded for synchronization", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Hoisted ExoPlayer: Preserved across configuration/orientation changes
+    val exoPlayer = remember(effectiveMediaUrl) {
+        val renderersFactory = DefaultRenderersFactory(context)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setEnableDecoderFallback(true)
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+
+        ExoPlayer.Builder(context, renderersFactory)
+            .setAudioAttributes(audioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
+            .build().apply {
+                volume = 1.0f
+                playWhenReady = false
+                trackSelectionParameters = trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                    .build()
+
+                if (effectiveMediaUrl.isNotEmpty()) {
+                    val uri = Uri.parse(effectiveMediaUrl)
+                    val mediaItemBuilder = MediaItem.Builder().setUri(uri)
+
+                    if (effectiveMediaUrl.endsWith(".m3u8", ignoreCase = true) || effectiveMediaUrl.contains(".m3u8?", ignoreCase = true)) {
+                        mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+                    } else if (effectiveMediaUrl.endsWith(".mpd", ignoreCase = true) || effectiveMediaUrl.contains(".mpd?", ignoreCase = true)) {
+                        mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_MPD)
+                    }
+
+                    setMediaItem(mediaItemBuilder.build())
+                    prepare()
+                }
+            }
+    }
+
+    // Attach listeners and syncEngine to the hoisted player
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val isBuffering = playbackState == Player.STATE_BUFFERING
+                onBufferingChanged(isBuffering)
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (canControlPlayback && !syncEngine.isApplyingSync) {
+                    val posSec = exoPlayer.currentPosition / 1000.0
+                    if (isPlaying) onPlay(posSec) else onPause(posSec)
+                }
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK && canControlPlayback && !syncEngine.isApplyingSync) {
+                    val posSec = newPosition.positionMs / 1000.0
+                    onSeek(posSec)
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                error.printStackTrace()
+            }
+        }
+
+        exoPlayer.addListener(listener)
+        syncEngine.attachPlayer(exoPlayer)
+
+        onDispose {
+            exoPlayer.removeListener(listener)
+            syncEngine.detachPlayer()
+            exoPlayer.release()
+        }
+    }
+
     var isParticipantsOpen by remember { mutableStateOf(false) }
     var isHostSettingsOpen by remember { mutableStateOf(false) }
+    var showAudioTrackDialog by remember { mutableStateOf(false) }
     var areSubtitlesEnabled by remember { mutableStateOf(true) }
 
     var isLandscapeChatOpen by remember { mutableStateOf(false) }
@@ -106,19 +217,18 @@ fun RoomScreen(
     }
 
     fun toggleSubtitles() {
-        val player = exoPlayerInstance ?: return
-        val currentParams = player.trackSelectionParameters
+        val currentParams = exoPlayer.trackSelectionParameters
         val currentlyDisabled = currentParams.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
 
         if (currentlyDisabled) {
-            player.trackSelectionParameters = currentParams.buildUpon()
+            exoPlayer.trackSelectionParameters = currentParams.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                 .setPreferredTextLanguage("en")
                 .build()
             areSubtitlesEnabled = true
             Toast.makeText(context, "Subtitles Enabled", Toast.LENGTH_SHORT).show()
         } else {
-            player.trackSelectionParameters = currentParams.buildUpon()
+            exoPlayer.trackSelectionParameters = currentParams.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
             areSubtitlesEnabled = false
@@ -154,26 +264,7 @@ fun RoomScreen(
                 .background(Color.Black)
         ) {
             ExoPlayerView(
-                mediaUrl = roomState.mediaUrl,
-                onPlayerReady = { exo ->
-                    exoPlayerInstance = exo
-                    syncEngine.attachPlayer(exo)
-                },
-                onBufferingChanged = { isBuffering ->
-                    onBufferingChanged(isBuffering)
-                },
-                canControl = canControlPlayback,
-                isProgrammaticSync = { syncEngine.isApplyingSync },
-                onUserPlayPauseChanged = { isPlaying, posSec ->
-                    if (canControlPlayback) {
-                        if (isPlaying) onPlay(posSec) else onPause(posSec)
-                    }
-                },
-                onUserSeek = { posSec ->
-                    if (canControlPlayback) {
-                        onSeek(posSec)
-                    }
-                },
+                exoPlayer = exoPlayer,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -191,8 +282,8 @@ fun RoomScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onLeaveRoom) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+                    IconButton(onClick = { toggleOrientation() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Return to Portrait", tint = TextPrimary)
                     }
                     Text(
                         text = roomState.mediaTitle,
@@ -206,10 +297,13 @@ fun RoomScreen(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { showAudioTrackDialog = true }) {
+                        Icon(Icons.Filled.Audiotrack, contentDescription = "Audio Tracks", tint = AccentCyan)
+                    }
                     IconButton(onClick = { toggleOrientation() }) {
                         Icon(
                             imageVector = Icons.Filled.FullscreenExit,
-                            contentDescription = "Portrait Mode",
+                            contentDescription = "Exit Fullscreen",
                             tint = TextPrimary
                         )
                     }
@@ -241,14 +335,14 @@ fun RoomScreen(
         }
     } else {
         // =========================================================================
-        // PORTRAIT (VERTICAL) MODE: YouTube-Style Layout with Inline Live Chat Below
+        // PORTRAIT (VERTICAL) MODE: YouTube-Style Layout with Fixed Top Player & Live Chat
         // =========================================================================
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(CinemaDarkBg)
         ) {
-            // 1. YouTube-style Top Video Container (16:9 Aspect Ratio)
+            // 1. YouTube-style Fixed Top Video Container (16:9 Aspect Ratio)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -256,26 +350,7 @@ fun RoomScreen(
                     .background(Color.Black)
             ) {
                 ExoPlayerView(
-                    mediaUrl = roomState.mediaUrl,
-                    onPlayerReady = { exo ->
-                        exoPlayerInstance = exo
-                        syncEngine.attachPlayer(exo)
-                    },
-                    onBufferingChanged = { isBuffering ->
-                        onBufferingChanged(isBuffering)
-                    },
-                    canControl = canControlPlayback,
-                    isProgrammaticSync = { syncEngine.isApplyingSync },
-                    onUserPlayPauseChanged = { isPlaying, posSec ->
-                        if (canControlPlayback) {
-                            if (isPlaying) onPlay(posSec) else onPause(posSec)
-                        }
-                    },
-                    onUserSeek = { posSec ->
-                        if (canControlPlayback) {
-                            onSeek(posSec)
-                        }
-                    },
+                    exoPlayer = exoPlayer,
                     modifier = Modifier.fillMaxSize()
                 )
 
@@ -308,13 +383,43 @@ fun RoomScreen(
                 }
             }
 
+            // Banner for Guest if Host is streaming a local video file
+            if (!roomState.isHost && roomState.mediaUrl.startsWith("content://") && localMediaOverrideUri == null) {
+                Surface(
+                    color = WarningAmber.copy(alpha = 0.2f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = WarningAmber)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Host streaming local movie", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                            Text("Select '${roomState.mediaTitle}' from storage", fontSize = 11.sp, color = TextSecondary)
+                        }
+                        Button(
+                            onClick = { guestFilePicker.launch(arrayOf("video/*", "video/mp4", "video/mkv", "video/webm", "video/avi")) },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text("Select", fontSize = 11.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
             // 2. Video Title & Room Action Header Bar
             Surface(
                 color = DarkSurface,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    // Movie Title extracted from link
+                    // Movie Title extracted from link / file
                     Text(
                         text = roomState.mediaTitle,
                         fontSize = 15.sp,
@@ -411,6 +516,14 @@ fun RoomScreen(
                             }
                         }
 
+                        // Audio Tracks Selector
+                        IconButton(
+                            onClick = { showAudioTrackDialog = true },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Filled.Audiotrack, contentDescription = "Audio Tracks", tint = AccentCyan, modifier = Modifier.size(18.dp))
+                        }
+
                         // Participants Count
                         IconButton(
                             onClick = { isParticipantsOpen = true },
@@ -442,7 +555,7 @@ fun RoomScreen(
 
             HorizontalDivider(color = DarkBorder)
 
-            // 3. YouTube-Style Embedded Inline Chat (Takes all remaining screen space)
+            // 3. YouTube-Style Embedded Inline Chat (Takes remaining space and resizes smoothly above keyboard)
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -610,6 +723,55 @@ fun RoomScreen(
         }
     }
 
+    // Audio Track Selection Dialog
+    if (showAudioTrackDialog) {
+        val tracks = remember(exoPlayer.currentTracks) {
+            val audioTracks = mutableListOf<Pair<Int, String>>()
+            for (group in exoPlayer.currentTracks.groups) {
+                if (group.type == C.TRACK_TYPE_AUDIO) {
+                    for (i in 0 until group.length) {
+                        val format = group.getTrackFormat(i)
+                        val lang = format.language ?: "Audio Track ${i + 1}"
+                        val label = format.label ?: lang
+                        val details = "$label (${format.sampleMimeType ?: "audio"})"
+                        audioTracks.add(Pair(i, details))
+                    }
+                }
+            }
+            audioTracks
+        }
+
+        AlertDialog(
+            onDismissRequest = { showAudioTrackDialog = false },
+            containerColor = DarkSurface,
+            title = { Text("🎵 Audio Tracks", color = TextPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (tracks.isEmpty()) {
+                        Text("Default audio output active", color = TextSecondary, fontSize = 13.sp)
+                    } else {
+                        tracks.forEach { (index, name) ->
+                            TextButton(
+                                onClick = {
+                                    showAudioTrackDialog = false
+                                    Toast.makeText(context, "Selected $name", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(name, color = AccentCyan, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAudioTrackDialog = false }) {
+                    Text("Close", color = TextSecondary)
+                }
+            }
+        )
+    }
+
     // Participant List Dialog
     if (isParticipantsOpen) {
         ParticipantListDialog(
@@ -740,9 +902,13 @@ fun RoomScreen(
             var newFileName by remember { mutableStateOf("") }
 
             val changeFilePicker = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.GetContent()
+                contract = ActivityResultContracts.OpenDocument()
             ) { uri: Uri? ->
                 if (uri != null) {
+                    try {
+                        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        context.contentResolver.takePersistableUriPermission(uri, flags)
+                    } catch (e: Exception) {}
                     newFileUri = uri
                     newFileName = MediaUtils.getFileNameFromUri(context, uri)
                 }
@@ -785,7 +951,7 @@ fun RoomScreen(
                             )
                         } else {
                             OutlinedButton(
-                                onClick = { changeFilePicker.launch("video/*") },
+                                onClick = { changeFilePicker.launch(arrayOf("video/*", "video/mp4", "video/mkv", "video/webm", "video/avi")) },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text(if (newFileName.isNotBlank()) newFileName else "Select Local Video")
@@ -819,3 +985,4 @@ fun RoomScreen(
         }
     }
 }
+

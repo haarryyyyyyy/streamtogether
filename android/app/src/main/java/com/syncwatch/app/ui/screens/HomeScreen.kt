@@ -1,5 +1,6 @@
 package com.syncwatch.app.ui.screens
 
+import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -391,9 +392,13 @@ fun HomeScreen(
         var selectedFileName by remember { mutableStateOf("") }
 
         val filePickerLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.GetContent()
+            contract = ActivityResultContracts.OpenDocument()
         ) { uri: Uri? ->
             if (uri != null) {
+                try {
+                    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    context.contentResolver.takePersistableUriPermission(uri, flags)
+                } catch (e: Exception) {}
                 selectedFileUri = uri
                 selectedFileName = MediaUtils.getFileNameFromUri(context, uri)
             }
@@ -495,7 +500,7 @@ fun HomeScreen(
                         )
 
                         OutlinedButton(
-                            onClick = { filePickerLauncher.launch("video/*") },
+                            onClick = { filePickerLauncher.launch(arrayOf("video/*", "video/mp4", "video/mkv", "video/webm", "video/avi")) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(52.dp),
