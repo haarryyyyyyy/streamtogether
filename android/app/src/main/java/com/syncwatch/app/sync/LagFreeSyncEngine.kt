@@ -30,6 +30,8 @@ class LagFreeSyncEngine(
     @Volatile
     var isApplyingSync: Boolean = false
 
+    private var lastSeekTimestampMs: Long = 0L
+
     fun attachPlayer(exoPlayer: Player) {
         this.player = exoPlayer
     }
@@ -47,7 +49,7 @@ class LagFreeSyncEngine(
                 if (exo != null && !isUserSeeking) {
                     evaluateAndApplySync(exo, roomStateFlow.value)
                 }
-                delay(250) // 4Hz evaluation loop
+                delay(200) // 5Hz evaluation loop
             }
         }
     }
@@ -64,15 +66,22 @@ class LagFreeSyncEngine(
         val rtt = clockSyncManager.getRtt()
         val offset = clockSyncManager.getOffset()
         val currentPosSec = exo.currentPosition / 1000.0
+        val nowMs = System.currentTimeMillis()
 
         if (room.isHost && room.controlMode == "HOST_ONLY") {
-            // Host is playback authority in HOST_ONLY mode
+            // Host follows room playback state during seek buffering gate or pause
+            if (!room.isPlaying && exo.playWhenReady) {
+                exo.playWhenReady = false
+            } else if (room.isPlaying && !exo.playWhenReady && !isUserSeeking) {
+                exo.playWhenReady = true
+            }
+
             _telemetry.value = SyncTelemetry(
                 rttMs = rtt,
                 clockOffsetMs = offset,
                 driftMs = 0L,
                 playbackSpeed = 1.0f,
-                status = SyncStatus.IN_SYNC,
+                status = if (exo.playbackState == Player.STATE_BUFFERING) SyncStatus.BUFFERING else SyncStatus.IN_SYNC,
                 targetPositionSec = currentPosSec,
                 currentPositionSec = currentPosSec
             )
@@ -111,9 +120,10 @@ class LagFreeSyncEngine(
             }
 
             if (!room.isPlaying) {
-                // Room is paused: Hard sync to exact pause position if drift > 250ms
+                // Room is paused or in seek buffering gate: Hard sync to exact pause position if drift > 250ms
                 val pauseDriftMs = ((targetPosSec - currentPosSec) * 1000).toLong()
-                if (Math.abs(pauseDriftMs) > 250 && targetPosSec > 0) {
+                if (Math.abs(pauseDriftMs) > 250 && targetPosSec >= 0 && (nowMs - lastSeekTimestampMs > 1200L)) {
+                    lastSeekTimestampMs = nowMs
                     exo.seekTo((targetPosSec * 1000).toLong())
                 }
                 _telemetry.value = SyncTelemetry(
@@ -139,16 +149,24 @@ class LagFreeSyncEngine(
                 // Case 1: In Sync (< 80ms)
                 newSpeed = 1.0f
                 status = SyncStatus.IN_SYNC
-            } else if (absDrift <= 600) {
-                // Case 2: Smooth imperceptible speed adjustment (80ms - 600ms)
-                val adjustment = (driftMs.toFloat() / 10000.0f).coerceIn(-0.03f, 0.03f)
+            } else if (absDrift <= 700) {
+                // Case 2: Smooth imperceptible speed adjustment (80ms - 700ms)
+                val adjustment = (driftMs.toFloat() / 10000.0f).coerceIn(-0.04f, 0.04f)
                 newSpeed = 1.0f + adjustment
                 status = if (driftMs > 0) SyncStatus.SPEEDING_UP else SyncStatus.SLOWING_DOWN
             } else {
-                // Case 3: Macro drift / Seek (> 600ms) -> Instant Seek
-                exo.seekTo((targetPosSec * 1000).toLong())
-                newSpeed = 1.0f
-                status = SyncStatus.SEEKING
+                // Case 3: Macro drift (> 700ms) -> Seek only if not recently sought
+                if (nowMs - lastSeekTimestampMs > 2200L) {
+                    lastSeekTimestampMs = nowMs
+                    exo.seekTo((targetPosSec * 1000).toLong())
+                    newSpeed = 1.0f
+                    status = SyncStatus.SEEKING
+                } else {
+                    // Within cooldown window: ramp speed without interrupting the buffer
+                    val adjustment = if (driftMs > 0) 0.05f else -0.05f
+                    newSpeed = 1.0f + adjustment
+                    status = if (driftMs > 0) SyncStatus.SPEEDING_UP else SyncStatus.SLOWING_DOWN
+                }
             }
 
             // Apply playback speed to ExoPlayer

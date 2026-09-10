@@ -155,6 +155,7 @@ class MainActivity : ComponentActivity() {
                             onKickParticipant = { targetId -> webSocketClient.sendKickParticipant(targetId) },
                             onBufferingChanged = { isBuffering -> webSocketClient.sendBufferingState(isBuffering) },
                             onSendMessage = { text -> webSocketClient.sendChat(text) },
+                            onSendHeartbeat = { pos, isPlaying -> webSocketClient.sendHeartbeat(pos, isPlaying) },
                             onUpdateSettings = { settings -> syncEngine.settings = settings },
                             onLeaveRoom = {
                                 localHostFileUri = null

@@ -66,4 +66,10 @@ sealed class SyncPacket {
         val type: String = "SEND_CHAT",
         val text: String
     )
+
+    data class MediaHeartbeat(
+        val type: String = "MEDIA_HEARTBEAT",
+        val positionSec: Double,
+        val isPlaying: Boolean
+    )
 }

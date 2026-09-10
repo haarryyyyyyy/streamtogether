@@ -370,6 +370,12 @@ function setupWebSocketServer(wss) {
               break;
             }
 
+            if (room.seekGateTimer) {
+              clearTimeout(room.seekGateTimer);
+              room.seekGateTimer = null;
+            }
+            room.isSeekBuffering = false;
+
             const requestedPos = data.positionSec !== undefined 
               ? Math.max(0, data.positionSec) 
               : calculateCurrentPosition(room);
@@ -406,6 +412,12 @@ function setupWebSocketServer(wss) {
               break;
             }
 
+            if (room.seekGateTimer) {
+              clearTimeout(room.seekGateTimer);
+              room.seekGateTimer = null;
+            }
+            room.isSeekBuffering = false;
+
             const currentPos = data.positionSec !== undefined 
               ? Math.max(0, data.positionSec) 
               : calculateCurrentPosition(room);
@@ -428,6 +440,42 @@ function setupWebSocketServer(wss) {
             break;
           }
 
+          case 'MEDIA_HEARTBEAT':
+          case 'SYNC_HEARTBEAT':
+          case 'playback:heartbeat': {
+            const room = rooms.get(currentRoomCode);
+            if (!room) break;
+
+            // In HOST_ONLY mode, only host updates the authoritative playback clock
+            if (room.controlMode === 'HOST_ONLY' && currentGuestId !== room.hostId) {
+              break;
+            }
+
+            // Do not overwrite during active seek pre-buffering gate
+            if (room.isSeekBuffering) {
+              break;
+            }
+
+            const hostPos = Math.max(0, data.positionSec || 0);
+            room.positionSec = hostPos;
+            room.anchorServerTime = now;
+            if (data.isPlaying !== undefined) {
+              room.isPlaying = Boolean(data.isPlaying);
+            }
+
+            // Broadcast refreshed anchor to all peers in the room
+            broadcastToRoom(currentRoomCode, {
+              type: 'SYNC_STATE',
+              isPlaying: room.isPlaying,
+              positionSec: hostPos,
+              anchorServerTime: now,
+              senderId: currentGuestId,
+              senderName: currentDisplayName,
+              action: 'HEARTBEAT'
+            });
+            break;
+          }
+
           case 'ACTION_SEEK':
           case 'playback:seek': {
             const room = rooms.get(currentRoomCode);
@@ -443,20 +491,55 @@ function setupWebSocketServer(wss) {
             }
 
             const seekPos = Math.max(0, data.positionSec || 0);
+            const wasPlaying = room.isPlaying;
             room.positionSec = seekPos;
             room.anchorServerTime = now;
+            room.isPlaying = false; // Hold playback while all peers pre-buffer target stream position
+            room.isSeekBuffering = wasPlaying;
 
-            console.log(`[SEEK] Room ${currentRoomCode} to ${seekPos.toFixed(2)}s by ${currentDisplayName}`);
+            if (room.seekGateTimer) {
+              clearTimeout(room.seekGateTimer);
+              room.seekGateTimer = null;
+            }
+
+            // Mark all peers in room as buffering
+            for (const peer of room.peers.values()) {
+              peer.isBuffering = true;
+            }
+
+            console.log(`[SEEK GATE] Room ${currentRoomCode} to ${seekPos.toFixed(2)}s by ${currentDisplayName} (autoResume=${wasPlaying})`);
 
             broadcastToRoom(currentRoomCode, {
               type: 'SYNC_STATE',
-              isPlaying: room.isPlaying,
+              isPlaying: false,
+              isBuffering: true,
               positionSec: seekPos,
               anchorServerTime: now,
               senderId: currentGuestId,
               senderName: currentDisplayName,
               action: 'SEEK'
             });
+
+            if (wasPlaying) {
+              // Safety fallback: resume playback automatically after 2.5s max in case a guest network is delayed
+              room.seekGateTimer = setTimeout(() => {
+                if (!rooms.has(currentRoomCode)) return;
+                const r = rooms.get(currentRoomCode);
+                if (r.isSeekBuffering) {
+                  r.isSeekBuffering = false;
+                  r.isPlaying = true;
+                  r.anchorServerTime = Date.now();
+                  console.log(`[SEEK GATE TIMEOUT] Resuming playback for Room ${currentRoomCode} at ${r.positionSec.toFixed(2)}s`);
+                  broadcastToRoom(currentRoomCode, {
+                    type: 'SYNC_STATE',
+                    isPlaying: true,
+                    positionSec: r.positionSec,
+                    anchorServerTime: r.anchorServerTime,
+                    action: 'PLAY'
+                  });
+                }
+              }, 2500);
+            }
             break;
           }
 
@@ -518,7 +601,7 @@ function setupWebSocketServer(wss) {
           }
 
           // ==========================================
-          // 6. BUFFERING TELEMETRY
+          // 6. BUFFERING TELEMETRY & SYNC GATE RELEASE
           // ==========================================
           case 'BUFFERING_STATE':
           case 'playback:buffering': {
@@ -536,6 +619,37 @@ function setupWebSocketServer(wss) {
               isBuffering: !!data.isBuffering,
               participants: getParticipantList(room)
             }, ws);
+
+            // If room is in seek buffering gate, check if all peers finished buffering
+            if (room.isSeekBuffering) {
+              let anyStillBuffering = false;
+              for (const p of room.peers.values()) {
+                if (p.isBuffering) {
+                  anyStillBuffering = true;
+                  break;
+                }
+              }
+
+              if (!anyStillBuffering) {
+                if (room.seekGateTimer) {
+                  clearTimeout(room.seekGateTimer);
+                  room.seekGateTimer = null;
+                }
+                room.isSeekBuffering = false;
+                room.isPlaying = true;
+                room.anchorServerTime = Date.now();
+
+                console.log(`[SEEK GATE READY] All peers buffered stream. Resuming Room ${currentRoomCode} at ${room.positionSec.toFixed(2)}s in lockstep.`);
+
+                broadcastToRoom(currentRoomCode, {
+                  type: 'SYNC_STATE',
+                  isPlaying: true,
+                  positionSec: room.positionSec,
+                  anchorServerTime: room.anchorServerTime,
+                  action: 'PLAY'
+                });
+              }
+            }
             break;
           }
 

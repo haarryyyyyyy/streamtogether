@@ -214,6 +214,10 @@ class SyncWebSocketClient(
         sendPacket(SyncPacket.SendChat(text = text))
     }
 
+    fun sendHeartbeat(positionSec: Double, isPlaying: Boolean) {
+        sendPacket(SyncPacket.MediaHeartbeat(positionSec = positionSec, isPlaying = isPlaying))
+    }
+
     private fun sendPacket(obj: Any) {
         try {
             val json = gson.toJson(obj)
