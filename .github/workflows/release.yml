@@ -54,10 +54,11 @@ jobs:
       - name: 🏷️ Determine Release Tag & Version
         id: vars
         run: |
+          VERSION_NAME=$(grep -o 'versionName = "[^"]*"' android/app/build.gradle.kts | cut -d '"' -f 2 || echo "1.9.0")
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
           else
-            TAG_NAME="v1.0.${{ github.run_number }}"
+            TAG_NAME="v${VERSION_NAME}"
           fi
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "release_name=WatchTogether ${TAG_NAME}" >> $GITHUB_OUTPUT

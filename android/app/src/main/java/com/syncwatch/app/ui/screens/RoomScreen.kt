@@ -7,7 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.media.AudioManager
 import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -18,7 +20,11 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -39,8 +45,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntSize
+import kotlin.math.roundToInt
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,6 +86,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+
+enum class SwipeGestureType {
+    BRIGHTNESS,
+    VOLUME
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -293,6 +308,20 @@ fun RoomScreen(
         }
     }
 
+    val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+
+    // Lock controls in fullscreen
+    var isControlsLocked by remember { mutableStateOf(false) }
+    var isUnlockButtonVisible by remember { mutableStateOf(true) }
+
+    // Swipe controls for brightness & volume HUD
+    var activeSwipeType by remember { mutableStateOf<SwipeGestureType?>(null) }
+    var swipeBrightnessLevel by remember { mutableFloatStateOf(0.5f) }
+    var swipeVolumeLevel by remember { mutableFloatStateOf(0.5f) }
+    var isSwipeHudVisible by remember { mutableStateOf(false) }
+    val swipeHudScope = rememberCoroutineScope()
+    var playerContainerSize by remember { mutableStateOf(IntSize.Zero) }
+
     // State for Custom Video Controls
     var isCurrentlyPlaying by remember { mutableStateOf(false) }
     var currentPosSec by remember { mutableStateOf(0.0) }
@@ -302,18 +331,38 @@ fun RoomScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var lastInteractionTime by remember { mutableStateOf(System.currentTimeMillis()) }
 
+    val sliderInteractionSource = remember { MutableInteractionSource() }
+    val isSliderDragged by sliderInteractionSource.collectIsDraggedAsState()
+    val isSliderPressed by sliderInteractionSource.collectIsPressedAsState()
+    val isInteractingWithSlider = isSliderDragged || isSliderPressed
+
+    LaunchedEffect(isInteractingWithSlider) {
+        if (isInteractingWithSlider) {
+            isUserScrubbing = true
+            syncEngine.isUserSeeking = true
+            lastInteractionTime = System.currentTimeMillis()
+        }
+    }
+
+    LaunchedEffect(isControlsLocked, isUnlockButtonVisible) {
+        if (isControlsLocked && isUnlockButtonVisible) {
+            delay(4000)
+            isUnlockButtonVisible = false
+        }
+    }
+
     // Realtime progress ticker and auto-hide timer
     LaunchedEffect(exoPlayer) {
         while (true) {
             isCurrentlyPlaying = exoPlayer.isPlaying
-            if (!isUserScrubbing) {
+            if (!isUserScrubbing && !isInteractingWithSlider) {
                 currentPosSec = exoPlayer.currentPosition / 1000.0
             }
             val dur = exoPlayer.duration
             totalDurationSec = if (dur > 0) dur / 1000.0 else 0.0
 
-            // Auto-hide controls after 3.5 seconds of inactivity if playing
-            if (controlsVisible && isCurrentlyPlaying && (System.currentTimeMillis() - lastInteractionTime > 3500)) {
+            // Auto-hide controls after 3.5 seconds of inactivity if playing, not scrubbing, and not locked
+            if (controlsVisible && isCurrentlyPlaying && !isUserScrubbing && !isInteractingWithSlider && !isControlsLocked && (System.currentTimeMillis() - lastInteractionTime > 3500)) {
                 controlsVisible = false
             }
 
@@ -322,8 +371,10 @@ fun RoomScreen(
     }
 
     fun triggerUserInteraction() {
-        controlsVisible = true
-        lastInteractionTime = System.currentTimeMillis()
+        if (!isControlsLocked) {
+            controlsVisible = true
+            lastInteractionTime = System.currentTimeMillis()
+        }
     }
 
     fun handlePlayPauseToggle() {
@@ -439,27 +490,98 @@ fun RoomScreen(
         val playIconSize = if (isCompactScreen) 28.dp else if (isLargeScreen) 42.dp else 36.dp
         val jumpBtnSize = if (isCompactScreen) 36.dp else if (isLargeScreen) 50.dp else 44.dp
         val jumpIconSize = if (isCompactScreen) 20.dp else if (isLargeScreen) 28.dp else 24.dp
-        val maxTitleWidth = if (isLandscapeMode) (screenWidthDp * 0.42f).dp else (screenWidthDp * 0.45f).dp
+        val maxTitleWidth = if (isLandscapeMode) (screenWidthDp * 0.38f).dp else (screenWidthDp * 0.45f).dp
 
         Box(
             modifier = modifier
                 .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) {
-                    controlsVisible = !controlsVisible
-                    if (controlsVisible) lastInteractionTime = System.currentTimeMillis()
-                }
+                .onSizeChanged { playerContainerSize = it }
         ) {
             ExoPlayerView(
                 exoPlayer = exoPlayer,
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Animated Overlay (Top Bar, Center Buttons, Bottom Scrubber Bar)
+            // Transparent Gesture & Tap Handler Layer
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(isLandscapeMode, isControlsLocked) {
+                        detectTapGestures(
+                            onTap = {
+                                if (isControlsLocked) {
+                                    isUnlockButtonVisible = !isUnlockButtonVisible
+                                } else {
+                                    controlsVisible = !controlsVisible
+                                    if (controlsVisible) lastInteractionTime = System.currentTimeMillis()
+                                }
+                            }
+                        )
+                    }
+                    .pointerInput(isLandscapeMode, isControlsLocked) {
+                        if (isLandscapeMode && !isControlsLocked) {
+                            detectDragGestures(
+                                onDragStart = { offset ->
+                                    val isLeft = offset.x < (playerContainerSize.width / 2f)
+                                    if (isLeft) {
+                                        activeSwipeType = SwipeGestureType.BRIGHTNESS
+                                        val currentB = activity?.window?.attributes?.screenBrightness ?: -1f
+                                        swipeBrightnessLevel = if (currentB >= 0f) currentB else {
+                                            try {
+                                                Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
+                                            } catch (e: Exception) { 0.5f }
+                                        }
+                                    } else {
+                                        activeSwipeType = SwipeGestureType.VOLUME
+                                        val maxV = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                        val curV = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                        swipeVolumeLevel = curV.toFloat() / maxV.toFloat()
+                                    }
+                                    isSwipeHudVisible = true
+                                    lastInteractionTime = System.currentTimeMillis()
+                                },
+                                onDragEnd = {
+                                    swipeHudScope.launch {
+                                        delay(1200)
+                                        isSwipeHudVisible = false
+                                        activeSwipeType = null
+                                    }
+                                },
+                                onDragCancel = {
+                                    swipeHudScope.launch {
+                                        delay(1200)
+                                        isSwipeHudVisible = false
+                                        activeSwipeType = null
+                                    }
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    lastInteractionTime = System.currentTimeMillis()
+                                    val height = playerContainerSize.height.coerceAtLeast(1).toFloat()
+                                    val delta = -dragAmount.y / (height * 0.75f)
+
+                                    if (activeSwipeType == SwipeGestureType.BRIGHTNESS) {
+                                        swipeBrightnessLevel = (swipeBrightnessLevel + delta).coerceIn(0.01f, 1.0f)
+                                        activity?.window?.let { win ->
+                                            val lp = win.attributes
+                                            lp.screenBrightness = swipeBrightnessLevel
+                                            win.attributes = lp
+                                        }
+                                    } else if (activeSwipeType == SwipeGestureType.VOLUME) {
+                                        val maxV = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                        swipeVolumeLevel = (swipeVolumeLevel + delta).coerceIn(0f, 1f)
+                                        val targetIndex = (swipeVolumeLevel * maxV).roundToInt().coerceIn(0, maxV)
+                                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetIndex, 0)
+                                    }
+                                }
+                            )
+                        }
+                    }
+            )
+
+            // Animated Overlay Controls (Top Bar, Center Buttons, Bottom Scrubber Bar)
             AnimatedVisibility(
-                visible = controlsVisible,
+                visible = controlsVisible && !isControlsLocked,
                 enter = fadeIn(),
                 exit = fadeOut(),
                 modifier = Modifier.fillMaxSize()
@@ -524,6 +646,22 @@ fun RoomScreen(
                                     contentDescription = "Subtitles",
                                     tint = if (areSubtitlesEnabled) AccentCyan else TextMuted
                                 )
+                            }
+
+                            // Lock Controls button (only in landscape fullscreen)
+                            if (isLandscapeMode) {
+                                IconButton(onClick = {
+                                    isControlsLocked = true
+                                    controlsVisible = false
+                                    isUnlockButtonVisible = true
+                                    showNotice("Controls Locked")
+                                }) {
+                                    Icon(
+                                        imageVector = Icons.Filled.LockOpen,
+                                        contentDescription = "Lock Controls",
+                                        tint = TextPrimary
+                                    )
+                                }
                             }
 
                             // Fullscreen Rotation Toggle
@@ -624,13 +762,14 @@ fun RoomScreen(
                             .align(Alignment.BottomCenter)
                             .padding(horizontal = if (isCompactScreen) 8.dp else 14.dp, vertical = 6.dp)
                     ) {
-                        // Slider Scrubber
-                        val displayPos = if (isUserScrubbing) scrubPositionSec.toDouble() else currentPosSec
+                        // Slider Scrubber with dedicated Interaction Source & smooth scrubbing
                         val maxDur = totalDurationSec.coerceAtLeast(1.0)
+                        val displayPos = if (isUserScrubbing || isInteractingWithSlider) scrubPositionSec.toDouble() else currentPosSec
 
                         Slider(
                             value = (displayPos / maxDur).toFloat().coerceIn(0f, 1f),
                             enabled = canControlPlayback,
+                            interactionSource = sliderInteractionSource,
                             onValueChange = { frac ->
                                 triggerUserInteraction()
                                 isUserScrubbing = true
@@ -641,7 +780,10 @@ fun RoomScreen(
                                 val target = scrubPositionSec.toDouble()
                                 currentPosSec = target
                                 handleSeekTo(target)
-                                isUserScrubbing = false
+                                coroutineScope.launch {
+                                    delay(350)
+                                    isUserScrubbing = false
+                                }
                             },
                             colors = SliderDefaults.colors(
                                 thumbColor = AccentCyan,
@@ -653,7 +795,7 @@ fun RoomScreen(
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(24.dp)
+                                .height(28.dp)
                         )
 
                         Row(
@@ -699,8 +841,105 @@ fun RoomScreen(
                 }
             }
 
+            // Floating Unlock Controls Button (when locked in landscape mode)
+            if (isLandscapeMode && isControlsLocked) {
+                AnimatedVisibility(
+                    visible = isUnlockButtonVisible,
+                    enter = fadeIn() + scaleIn(),
+                    exit = fadeOut() + scaleOut(),
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 28.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = DarkSurface.copy(alpha = 0.85f),
+                        border = BorderStroke(2.dp, AccentCyan),
+                        shadowElevation = 12.dp,
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clickable {
+                                isControlsLocked = false
+                                controlsVisible = true
+                                showNotice("Controls Unlocked")
+                            }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.Lock,
+                                contentDescription = "Unlock Controls",
+                                tint = AccentCyan,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Swipe Brightness & Volume HUD Indicator
+            AnimatedVisibility(
+                visible = isSwipeHudVisible && activeSwipeType != null && !isControlsLocked,
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.Black.copy(alpha = 0.82f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+                    shadowElevation = 12.dp
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        val isBrightness = activeSwipeType == SwipeGestureType.BRIGHTNESS
+                        val icon = if (isBrightness) {
+                            if (swipeBrightnessLevel < 0.33f) Icons.Filled.BrightnessLow
+                            else if (swipeBrightnessLevel < 0.66f) Icons.Filled.BrightnessMedium
+                            else Icons.Filled.BrightnessHigh
+                        } else {
+                            if (swipeVolumeLevel <= 0.01f) Icons.Filled.VolumeMute
+                            else if (swipeVolumeLevel < 0.5f) Icons.Filled.VolumeDown
+                            else Icons.Filled.VolumeUp
+                        }
+
+                        val percentage = if (isBrightness) {
+                            (swipeBrightnessLevel * 100).roundToInt()
+                        } else {
+                            (swipeVolumeLevel * 100).roundToInt()
+                        }
+
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = AccentCyan,
+                            modifier = Modifier.size(36.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "${if (isBrightness) "Brightness" else "Volume"} $percentage%",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        LinearProgressIndicator(
+                            progress = { if (isBrightness) swipeBrightnessLevel else swipeVolumeLevel },
+                            modifier = Modifier
+                                .width(120.dp)
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = AccentCyan,
+                            trackColor = Color.White.copy(alpha = 0.2f)
+                        )
+                    }
+                }
+            }
+
             // Buffering Spinner Indicator when controls are hidden
-            if (!controlsVisible && isPlayerBuffering) {
+            if (!controlsVisible && isPlayerBuffering && !isControlsLocked) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -714,7 +953,7 @@ fun RoomScreen(
             }
 
             // Transient Clean In-Player Text Display (Only in Fullscreen / Landscape mode on Bottom Right, no background, stacked)
-            if (isLandscapeMode && transientChats.isNotEmpty()) {
+            if (isLandscapeMode && !isControlsLocked && transientChats.isNotEmpty()) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
@@ -734,9 +973,9 @@ fun RoomScreen(
                                         color = AccentCyan,
                                         fontWeight = FontWeight.Bold,
                                         shadow = androidx.compose.ui.graphics.Shadow(
-                                            color = Color.Black,
-                                            blurRadius = 8f,
-                                            offset = androidx.compose.ui.geometry.Offset(2f, 2f)
+                                             color = Color.Black,
+                                             blurRadius = 8f,
+                                             offset = androidx.compose.ui.geometry.Offset(2f, 2f)
                                         )
                                     )
                                 ) {
