@@ -282,6 +282,12 @@ function setupWebSocketServer(wss) {
 
             currentRoomCode = rawCode;
             const isHost = currentGuestId === room.hostId;
+            const existingPeer = room.peers.get(currentGuestId);
+            const isReconnecting = !!existingPeer;
+            if (isReconnecting && existingPeer.disconnectTimer) {
+              clearTimeout(existingPeer.disconnectTimer);
+              existingPeer.disconnectTimer = null;
+            }
 
             // Save / Update peer in room
             room.peers.set(currentGuestId, {
@@ -289,11 +295,12 @@ function setupWebSocketServer(wss) {
               displayName: currentDisplayName,
               ws: ws,
               isBuffering: false,
-              joinedAt: now
+              joinedAt: isReconnecting ? existingPeer.joinedAt : now,
+              disconnectTimer: null
             });
 
             const currentPos = calculateCurrentPosition(room);
-            console.log(`[User Joined] ${currentDisplayName} (${currentGuestId}) joined ${rawCode} | Current Pos: ${currentPos.toFixed(2)}s`);
+            console.log(`[User Joined] ${currentDisplayName} (${currentGuestId}) joined ${rawCode} (reconnect=${isReconnecting}) | Current Pos: ${currentPos.toFixed(2)}s`);
 
             // Send authoritative state to the joining user
             sendJson(ws, {
@@ -326,21 +333,23 @@ function setupWebSocketServer(wss) {
               participants: getParticipantList(room)
             }, ws);
 
-            // Add system chat message
-            const sysMsg = {
-              id: `sys_${now}_${Math.random().toString(36).substring(2, 6)}`,
-              senderId: 'SYSTEM',
-              senderName: 'System',
-              isSystem: true,
-              isHost: false,
-              text: `${currentDisplayName} joined the room`,
-              timestamp: now
-            };
-            room.chatHistory.push(sysMsg);
-            broadcastToRoom(rawCode, {
-              type: 'CHAT_MESSAGE',
-              message: sysMsg
-            });
+            if (!isReconnecting) {
+              // Add system chat message only for fresh joins
+              const sysMsg = {
+                id: `sys_${now}_${Math.random().toString(36).substring(2, 6)}`,
+                senderId: 'SYSTEM',
+                senderName: 'System',
+                isSystem: true,
+                isHost: false,
+                text: `${currentDisplayName} joined the room`,
+                timestamp: now
+              };
+              room.chatHistory.push(sysMsg);
+              broadcastToRoom(rawCode, {
+                type: 'CHAT_MESSAGE',
+                message: sysMsg
+              });
+            }
             break;
           }
 
@@ -643,52 +652,60 @@ function setupWebSocketServer(wss) {
       }
     });
 
-    // Handle Client Disconnect
+    // Handle Client Disconnect with Grace Period
     ws.on('close', () => {
       console.log(`[WS Disconnect] ${currentDisplayName} (${currentGuestId})`);
       if (currentRoomCode && rooms.has(currentRoomCode)) {
         const room = rooms.get(currentRoomCode);
-        room.peers.delete(currentGuestId);
+        const peer = room.peers.get(currentGuestId);
 
-        if (room.peers.size === 0) {
-          console.log(`[Room Cleaned] Room ${currentRoomCode} is empty. Removed.`);
-          // Clean up any uploaded stream files
-          const streamInfo = roomStreams.get(currentRoomCode);
-          if (streamInfo && streamInfo.filePath && fs.existsSync(streamInfo.filePath)) {
-            try {
-              fs.unlinkSync(streamInfo.filePath);
-              console.log(`[Stream Cleaned] Deleted stream file for room ${currentRoomCode}`);
-            } catch (e) {
-              console.error(`[Stream Cleanup Error]`, e.message);
+        if (peer) {
+          if (peer.disconnectTimer) clearTimeout(peer.disconnectTimer);
+          peer.disconnectTimer = setTimeout(() => {
+            if (!rooms.has(currentRoomCode)) return;
+            const r = rooms.get(currentRoomCode);
+            const p = r.peers.get(currentGuestId);
+            if (!p) return;
+            if (p.ws && p.ws.readyState === WebSocket.OPEN) return;
+
+            r.peers.delete(currentGuestId);
+            console.log(`[Peer Evicted after timeout] ${currentDisplayName} (${currentGuestId}) from ${currentRoomCode}`);
+
+            if (r.peers.size === 0) {
+              console.log(`[Room Cleaned] Room ${currentRoomCode} is empty. Removed.`);
+              const streamInfo = roomStreams.get(currentRoomCode);
+              if (streamInfo && streamInfo.filePath && fs.existsSync(streamInfo.filePath)) {
+                try {
+                  fs.unlinkSync(streamInfo.filePath);
+                } catch (e) {}
+              }
+              roomStreams.delete(currentRoomCode);
+              rooms.delete(currentRoomCode);
+            } else {
+              if (r.hostId === currentGuestId) {
+                const nextHostId = r.peers.keys().next().value;
+                const nextHost = r.peers.get(nextHostId);
+                r.hostId = nextHostId;
+                r.hostName = nextHost ? nextHost.displayName : 'Host';
+
+                console.log(`[Host Transferred] Room ${currentRoomCode} -> New Host: ${r.hostName} (${nextHostId})`);
+
+                broadcastToRoom(currentRoomCode, {
+                  type: 'HOST_CHANGED',
+                  newHostId: nextHostId,
+                  newHostName: r.hostName,
+                  participants: getParticipantList(r)
+                });
+              }
+
+              broadcastToRoom(currentRoomCode, {
+                type: 'PARTICIPANT_LEFT',
+                guestId: currentGuestId,
+                displayName: currentDisplayName,
+                participants: getParticipantList(r)
+              });
             }
-          }
-          roomStreams.delete(currentRoomCode);
-          rooms.delete(currentRoomCode);
-        } else {
-          // If host left, assign next senior peer as host
-          if (room.hostId === currentGuestId) {
-            const nextHostId = room.peers.keys().next().value;
-            const nextHost = room.peers.get(nextHostId);
-            room.hostId = nextHostId;
-            room.hostName = nextHost ? nextHost.displayName : 'Host';
-
-            console.log(`[Host Transferred] Room ${currentRoomCode} -> New Host: ${room.hostName} (${nextHostId})`);
-
-            broadcastToRoom(currentRoomCode, {
-              type: 'HOST_CHANGED',
-              newHostId: nextHostId,
-              newHostName: room.hostName,
-              participants: getParticipantList(room)
-            });
-          }
-
-          // Notify room of departure
-          broadcastToRoom(currentRoomCode, {
-            type: 'PARTICIPANT_LEFT',
-            guestId: currentGuestId,
-            displayName: currentDisplayName,
-            participants: getParticipantList(room)
-          });
+          }, 15000);
         }
       }
     });

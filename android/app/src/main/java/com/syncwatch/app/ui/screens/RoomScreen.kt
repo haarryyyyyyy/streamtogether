@@ -44,6 +44,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.AudioAttributes
@@ -70,6 +73,7 @@ import com.syncwatch.app.ui.theme.*
 import com.syncwatch.app.utils.MediaUtils
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -94,7 +98,8 @@ fun RoomScreen(
     onSendMessage: (String) -> Unit,
     onUpdateSettings: (SyncSettings) -> Unit,
     onLeaveRoom: () -> Unit,
-    syncEngine: LagFreeSyncEngine
+    syncEngine: LagFreeSyncEngine,
+    infoFlow: kotlinx.coroutines.flow.SharedFlow<String>? = null
 ) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
@@ -116,23 +121,64 @@ fun RoomScreen(
     var isParticipantsOpen by remember { mutableStateOf(false) }
     var isHostSettingsOpen by remember { mutableStateOf(false) }
     var areSubtitlesEnabled by remember { mutableStateOf(true) }
-
     var isLandscapeChatOpen by remember { mutableStateOf(false) }
     var chatInputText by remember { mutableStateOf("") }
     val chatListState = rememberLazyListState()
 
-    // Transient in-player text overlay for incoming chats (lasts for 3 seconds)
-    var activeToastMessage by remember { mutableStateOf<String?>(null) }
+    var onScreenNotice by remember { mutableStateOf<String?>(null) }
+    val noticeCoroutineScope = rememberCoroutineScope()
+
+    fun showNotice(msg: String) {
+        onScreenNotice = msg
+        noticeCoroutineScope.launch {
+            delay(2800)
+            if (onScreenNotice == msg) {
+                onScreenNotice = null
+            }
+        }
+    }
+
+    LaunchedEffect(infoFlow) {
+        infoFlow?.collect { info ->
+            showNotice(info)
+        }
+    }
+
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            delay(50)
+            chatListState.animateScrollToItem(messages.size - 1)
+        }
+    }
+
+    // Keep screen on while playing video
+    DisposableEffect(Unit) {
+        val window = activity?.window
+        window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    var isPlayerBuffering by remember { mutableStateOf(false) }
+
+    // Transient in-player text overlay for incoming chats in fullscreen/landscape mode
+    data class TransientChat(val id: String, val sender: String, val text: String)
+    val transientChats = remember { mutableStateListOf<TransientChat>() }
     var lastProcessedMessageCount by remember { mutableIntStateOf(messages.size) }
 
     LaunchedEffect(messages.size) {
         if (messages.size > lastProcessedMessageCount) {
-            val latestMsg = messages.lastOrNull()
-            if (latestMsg != null && latestMsg.text.isNotBlank() && !latestMsg.isSystem) {
-                activeToastMessage = latestMsg.text
-                delay(3000)
-                if (activeToastMessage == latestMsg.text) {
-                    activeToastMessage = null
+            val newMsgs = messages.drop(lastProcessedMessageCount)
+            for (msg in newMsgs) {
+                if (msg.text.isNotBlank() && !msg.isSystem) {
+                    val transient = TransientChat(id = msg.id, sender = msg.sender.ifBlank { "Guest" }, text = msg.text)
+                    transientChats.add(transient)
+                    // Auto-remove this specific message after 4.5 seconds
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                        delay(4500)
+                        transientChats.remove(transient)
+                    }
                 }
             }
         }
@@ -215,6 +261,7 @@ fun RoomScreen(
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 val isBuffering = playbackState == Player.STATE_BUFFERING
+                isPlayerBuffering = isBuffering
                 onBufferingChanged(isBuffering)
             }
 
@@ -282,7 +329,7 @@ fun RoomScreen(
     fun handlePlayPauseToggle() {
         triggerUserInteraction()
         if (!canControlPlayback) {
-            Toast.makeText(context, "Only host can control playback in Host Control mode", Toast.LENGTH_SHORT).show()
+            showNotice("Only host can control playback in Host Control mode")
             return
         }
         val targetPlay = !exoPlayer.isPlaying
@@ -296,16 +343,21 @@ fun RoomScreen(
         }
     }
 
+    val coroutineScope = rememberCoroutineScope()
+
     fun handleSeekTo(targetSec: Double) {
         triggerUserInteraction()
         if (!canControlPlayback) {
-            Toast.makeText(context, "Only host can seek in Host Control mode", Toast.LENGTH_SHORT).show()
+            showNotice("Only host can seek in Host Control mode")
             return
         }
         syncEngine.isUserSeeking = true
         exoPlayer.seekTo((targetSec * 1000).toLong())
         onSeek(targetSec)
-        syncEngine.isUserSeeking = false
+        coroutineScope.launch {
+            delay(600)
+            syncEngine.isUserSeeking = false
+        }
     }
 
     fun handleReplay10() {
@@ -330,13 +382,13 @@ fun RoomScreen(
                 .setPreferredTextLanguage("en")
                 .build()
             areSubtitlesEnabled = true
-            Toast.makeText(context, "Subtitles Enabled", Toast.LENGTH_SHORT).show()
+            showNotice("Subtitles Enabled")
         } else {
             exoPlayer.trackSelectionParameters = currentParams.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
             areSubtitlesEnabled = false
-            Toast.makeText(context, "Subtitles Disabled", Toast.LENGTH_SHORT).show()
+            showNotice("Subtitles Disabled")
         }
     }
 
@@ -344,7 +396,7 @@ fun RoomScreen(
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = ClipData.newPlainText("WatchTogether Room Code", roomState.pin)
         clipboard.setPrimaryClip(clip)
-        Toast.makeText(context, "Room Code copied: ${roomState.pin}", Toast.LENGTH_SHORT).show()
+        showNotice("Room Code copied: ${roomState.pin}")
     }
 
     fun shareRoomCode() {
@@ -531,12 +583,20 @@ fun RoomScreen(
                                 .clickable { handlePlayPauseToggle() },
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = if (isCurrentlyPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                contentDescription = "Play/Pause",
-                                tint = Color.Black,
-                                modifier = Modifier.size(playIconSize)
-                            )
+                            if (isPlayerBuffering) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(playIconSize),
+                                    color = Color.Black,
+                                    strokeWidth = 3.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = if (isCurrentlyPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    contentDescription = "Play/Pause",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(playIconSize)
+                                )
+                            }
                         }
 
                         // Forward 10s
@@ -570,6 +630,7 @@ fun RoomScreen(
 
                         Slider(
                             value = (displayPos / maxDur).toFloat().coerceIn(0f, 1f),
+                            enabled = canControlPlayback,
                             onValueChange = { frac ->
                                 triggerUserInteraction()
                                 isUserScrubbing = true
@@ -577,14 +638,18 @@ fun RoomScreen(
                                 scrubPositionSec = (frac * maxDur).toFloat()
                             },
                             onValueChangeFinished = {
+                                val target = scrubPositionSec.toDouble()
+                                currentPosSec = target
+                                handleSeekTo(target)
                                 isUserScrubbing = false
-                                syncEngine.isUserSeeking = false
-                                handleSeekTo(scrubPositionSec.toDouble())
                             },
                             colors = SliderDefaults.colors(
                                 thumbColor = AccentCyan,
                                 activeTrackColor = AccentCyan,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.25f)
+                                inactiveTrackColor = Color.White.copy(alpha = 0.25f),
+                                disabledThumbColor = AccentCyan.copy(alpha = 0.4f),
+                                disabledActiveTrackColor = AccentCyan.copy(alpha = 0.4f),
+                                disabledInactiveTrackColor = Color.White.copy(alpha = 0.1f)
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -634,32 +699,66 @@ fun RoomScreen(
                 }
             }
 
-            // Transient Clean In-Player Text Display (Only text displayed, lasting 3 seconds)
-            AnimatedVisibility(
-                visible = activeToastMessage != null,
-                enter = fadeIn() + slideInVertically(initialOffsetY = { -20 }),
-                exit = fadeOut() + slideOutVertically(targetOffsetY = { -20 }),
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = if (controlsVisible) 60.dp else 24.dp)
-                    .padding(horizontal = 24.dp)
-            ) {
-                activeToastMessage?.let { textMsg ->
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.72f),
-                        shape = RoundedCornerShape(20.dp),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
-                        shadowElevation = 4.dp
-                    ) {
+            // Buffering Spinner Indicator when controls are hidden
+            if (!controlsVisible && isPlayerBuffering) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(48.dp),
+                        color = AccentCyan,
+                        strokeWidth = 3.5.dp
+                    )
+                }
+            }
+
+            // Transient Clean In-Player Text Display (Only in Fullscreen / Landscape mode on Bottom Right, no background, stacked)
+            if (isLandscapeMode && transientChats.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(
+                            bottom = if (controlsVisible) 76.dp else 24.dp,
+                            end = 24.dp
+                        )
+                        .widthIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalAlignment = Alignment.End
+                ) {
+                    transientChats.takeLast(5).forEach { chat ->
                         Text(
-                            text = textMsg,
-                            color = Color.White,
-                            fontSize = if (isCompactScreen) 13.sp else 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            text = buildAnnotatedString {
+                                withStyle(
+                                    SpanStyle(
+                                        color = AccentCyan,
+                                        fontWeight = FontWeight.Bold,
+                                        shadow = androidx.compose.ui.graphics.Shadow(
+                                            color = Color.Black,
+                                            blurRadius = 8f,
+                                            offset = androidx.compose.ui.geometry.Offset(2f, 2f)
+                                        )
+                                    )
+                                ) {
+                                    append("${chat.sender}: ")
+                                }
+                                withStyle(
+                                    SpanStyle(
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Medium,
+                                        shadow = androidx.compose.ui.graphics.Shadow(
+                                            color = Color.Black,
+                                            blurRadius = 8f,
+                                            offset = androidx.compose.ui.geometry.Offset(2f, 2f)
+                                        )
+                                    )
+                                ) {
+                                    append(chat.text)
+                                }
+                            },
+                            fontSize = if (isCompactScreen) 13.sp else 15.sp,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -684,6 +783,14 @@ fun RoomScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
+            // On-Screen Appealing Notification Badge
+            OnScreenNoticeBadge(
+                message = onScreenNotice,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 18.dp)
+            )
+
             // Slide-in Landscape Chat
             AnimatedVisibility(
                 visible = isLandscapeChatOpen,
@@ -706,23 +813,26 @@ fun RoomScreen(
         // =========================================================================
         // PORTRAIT (VERTICAL) MODE: YouTube-Style Fixed Player & Bottom Live Chat
         // =========================================================================
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(CinemaDarkBg)
         ) {
-            // 1. YouTube-style Top Video Container (16:9 Aspect Ratio)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .background(Color.Black)
+            Column(
+                modifier = Modifier.fillMaxSize()
             ) {
-                CustomVideoPlayerControlsOverlay(
-                    isLandscapeMode = false,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
+                // 1. YouTube-style Top Video Container (16:9 Aspect Ratio)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .background(Color.Black)
+                ) {
+                    CustomVideoPlayerControlsOverlay(
+                        isLandscapeMode = false,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
 
             // Stream Upload & Sharing Status Banner
             if (roomState.isHost && uploadState is com.syncwatch.app.data.network.UploadState.Uploading) {
@@ -1079,8 +1189,15 @@ fun RoomScreen(
                         keyboardActions = KeyboardActions(
                             onSend = {
                                 if (chatInputText.isNotBlank()) {
-                                    onSendMessage(chatInputText.trim())
+                                    val txt = chatInputText.trim()
                                     chatInputText = ""
+                                    onSendMessage(txt)
+                                    noticeCoroutineScope.launch {
+                                        delay(80)
+                                        if (messages.isNotEmpty()) {
+                                            chatListState.animateScrollToItem(messages.size - 1)
+                                        }
+                                    }
                                 }
                             }
                         ),
@@ -1090,8 +1207,15 @@ fun RoomScreen(
                     IconButton(
                         onClick = {
                             if (chatInputText.isNotBlank()) {
-                                onSendMessage(chatInputText.trim())
+                                val txt = chatInputText.trim()
                                 chatInputText = ""
+                                onSendMessage(txt)
+                                noticeCoroutineScope.launch {
+                                    delay(80)
+                                    if (messages.isNotEmpty()) {
+                                        chatListState.animateScrollToItem(messages.size - 1)
+                                    }
+                                }
                             }
                         },
                         colors = IconButtonDefaults.iconButtonColors(contentColor = AccentCyan)
@@ -1099,9 +1223,18 @@ fun RoomScreen(
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", modifier = Modifier.size(18.dp))
                     }
                 }
-            }
-        }
-    }
+            } // closes inner Column (Inline Chat)
+        } // closes outer Column
+
+        // On-Screen Appealing Notification Badge
+        OnScreenNoticeBadge(
+            message = onScreenNotice,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 16.dp)
+        )
+    } // closes Box
+}
 
     // Leave Room Confirmation Dialog
     if (showExitConfirmDialog) {
@@ -1476,7 +1609,7 @@ fun RoomScreen(
                                                 .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(tIdx)))
                                                 .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
                                                 .build()
-                                            Toast.makeText(context, "Audio switched to $label", Toast.LENGTH_SHORT).show()
+                                            showNotice("Audio switched to $label")
                                         }
                                     }
                             ) {
@@ -1515,7 +1648,7 @@ fun RoomScreen(
                                             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                                             .build()
                                         areSubtitlesEnabled = false
-                                        Toast.makeText(context, "Subtitles turned off", Toast.LENGTH_SHORT).show()
+                                        showNotice("Subtitles turned off")
                                     }
                             ) {
                                 Row(
@@ -1549,7 +1682,7 @@ fun RoomScreen(
                                                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                                                 .build()
                                             areSubtitlesEnabled = true
-                                            Toast.makeText(context, "Subtitles: $label", Toast.LENGTH_SHORT).show()
+                                            showNotice("Subtitles: $label")
                                         }
                                     }
                             ) {
@@ -1577,6 +1710,62 @@ fun RoomScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+fun OnScreenNoticeBadge(
+    message: String?,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = message != null,
+        enter = fadeIn(animationSpec = androidx.compose.animation.core.tween(250)) +
+                slideInVertically(
+                    initialOffsetY = { -50 },
+                    animationSpec = androidx.compose.animation.core.tween(250)
+                ),
+        exit = fadeOut(animationSpec = androidx.compose.animation.core.tween(250)) +
+                slideOutVertically(
+                    targetOffsetY = { -50 },
+                    animationSpec = androidx.compose.animation.core.tween(250)
+                ),
+        modifier = modifier
+    ) {
+        message?.let { textMsg ->
+            Surface(
+                color = Color(0xFF0F172A).copy(alpha = 0.95f),
+                shape = RoundedCornerShape(24.dp),
+                border = BorderStroke(
+                    1.2.dp,
+                    Brush.horizontalGradient(
+                        listOf(AccentCyan.copy(alpha = 0.8f), AccentIndigo.copy(alpha = 0.8f))
+                    )
+                ),
+                shadowElevation = 8.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(AccentCyan)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = textMsg,
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.2.sp
+                    )
+                }
+            }
+        }
     }
 }
 

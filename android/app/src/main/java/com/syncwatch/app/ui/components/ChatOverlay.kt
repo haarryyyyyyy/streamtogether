@@ -30,6 +30,7 @@ import com.syncwatch.app.data.models.ChatMessage
 import com.syncwatch.app.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlinx.coroutines.delay
 
 @Composable
 fun ChatOverlay(
@@ -42,14 +43,15 @@ fun ChatOverlay(
     val listState = rememberLazyListState()
     val blockedSenders = remember { mutableStateListOf<String>() }
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
-        }
-    }
-
     val visibleMessages = remember(messages.size, blockedSenders.size) {
         messages.filterNot { it.senderId in blockedSenders }
+    }
+
+    LaunchedEffect(visibleMessages.size) {
+        if (visibleMessages.isNotEmpty()) {
+            delay(50)
+            listState.animateScrollToItem(visibleMessages.size - 1)
+        }
     }
 
     Card(

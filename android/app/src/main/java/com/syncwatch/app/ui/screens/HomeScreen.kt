@@ -84,12 +84,24 @@ fun HomeScreen(
     var isServerChecking by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
+    var onScreenNotice by remember { mutableStateOf<String?>(null) }
+
+    fun showNotice(msg: String) {
+        onScreenNotice = msg
+        coroutineScope.launch {
+            delay(2800)
+            if (onScreenNotice == msg) {
+                onScreenNotice = null
+            }
+        }
+    }
+
     fun refreshServerStatus() {
         coroutineScope.launch {
             isServerChecking = true
             isServerConnected = ServerHealthChecker.checkHealth(httpBaseUrl)
             isServerChecking = false
-            Toast.makeText(context, if (isServerConnected == true) "Server Connected" else "Server Offline", Toast.LENGTH_SHORT).show()
+            showNotice(if (isServerConnected == true) "Server Connected ✨" else "Server Offline ⚠️")
         }
     }
 
@@ -104,11 +116,11 @@ fun HomeScreen(
         val cleanCode = targetCode.trim().uppercase()
         val cleanName = displayName.trim()
         if (cleanName.isBlank()) {
-            Toast.makeText(context, "Please enter your name", Toast.LENGTH_SHORT).show()
+            showNotice("Please enter your name")
             return
         }
         if (cleanCode.isBlank()) {
-            Toast.makeText(context, "Please enter a Room Code", Toast.LENGTH_SHORT).show()
+            showNotice("Please enter a Room Code")
             return
         }
         prefs.saveDisplayName(cleanName)
@@ -228,9 +240,134 @@ fun HomeScreen(
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary,
-                        letterSpacing = 0.5.sp,
-                        modifier = Modifier.padding(bottom = 32.dp)
+                        letterSpacing = 0.5.sp
                     )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // App Version Badge (Clickable to check for latest GitHub release)
+                    var isCheckingUpdate by remember { mutableStateOf(false) }
+                    var updateDialogInfo by remember { mutableStateOf<com.syncwatch.app.data.network.UpdateInfo?>(null) }
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = DarkSurfaceElevated,
+                        border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(DarkBorder)),
+                        modifier = Modifier
+                            .padding(bottom = 32.dp)
+                            .clickable {
+                                if (!isCheckingUpdate) {
+                                    coroutineScope.launch {
+                                        isCheckingUpdate = true
+                                        showNotice("Checking for updates...")
+                                        val info = com.syncwatch.app.data.network.GitHubUpdateChecker.checkForUpdates()
+                                        isCheckingUpdate = false
+                                        updateDialogInfo = info
+                                    }
+                                }
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "v1.9.0",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = AccentCyan
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            if (isCheckingUpdate) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(10.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = AccentCyan
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Outlined.CloudDownload,
+                                    contentDescription = "Check for Updates",
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Update Dialog
+                    updateDialogInfo?.let { updateInfo ->
+                        AlertDialog(
+                            onDismissRequest = { updateDialogInfo = null },
+                            containerColor = DarkSurface,
+                            title = {
+                                Text(
+                                    text = if (updateInfo.hasUpdate) "Update Available! 🎉" else "You're up to date! ✨",
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                )
+                            },
+                            text = {
+                                Column {
+                                    if (updateInfo.hasUpdate) {
+                                        Text(
+                                            text = "A new version (${updateInfo.latestVersion}) is available on GitHub. Your current version is v1.9.0.",
+                                            color = TextSecondary,
+                                            fontSize = 13.sp
+                                        )
+                                        if (updateInfo.releaseNotes.isNotBlank()) {
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Text(
+                                                text = updateInfo.releaseNotes,
+                                                color = TextMuted,
+                                                fontSize = 12.sp,
+                                                maxLines = 4,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    } else {
+                                        Text(
+                                            text = "StreamTogether v1.9.0 is the latest version. Enjoy synchronized streaming!",
+                                            color = TextSecondary,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                if (updateInfo.hasUpdate) {
+                                    Button(
+                                        onClick = {
+                                            updateDialogInfo = null
+                                            try {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo.releaseUrl))
+                                                context.startActivity(intent)
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Could not open browser", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)
+                                    ) {
+                                        Text("Download Update", color = Color.Black, fontWeight = FontWeight.Bold)
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = { updateDialogInfo = null },
+                                        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan)
+                                    ) {
+                                        Text("OK", color = Color.Black, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            },
+                            dismissButton = {
+                                if (updateInfo.hasUpdate) {
+                                    TextButton(onClick = { updateDialogInfo = null }) {
+                                        Text("Later", color = TextSecondary)
+                                    }
+                                }
+                            }
+                        )
+                    }
                 }
 
             // Display Name Input Card
@@ -368,7 +505,7 @@ fun HomeScreen(
                             onClick = {
                                 val cleanName = displayName.trim()
                                 if (cleanName.isBlank()) {
-                                    Toast.makeText(context, "Please enter your name", Toast.LENGTH_SHORT).show()
+                                    showNotice("Please enter your name")
                                     return@OutlinedButton
                                 }
                                 prefs.saveDisplayName(cleanName)
@@ -477,6 +614,14 @@ fun HomeScreen(
                 Spacer(modifier = Modifier.height(40.dp))
             }
         }
+
+        // On-Screen Appealing Notification Badge
+        OnScreenNoticeBadge(
+            message = onScreenNotice,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 10.dp)
+        )
     }
 }
 
@@ -642,13 +787,13 @@ fun HomeScreen(
                     onClick = {
                         val cleanName = displayName.trim()
                         if (cleanName.isBlank()) {
-                            Toast.makeText(context, "Please enter your name first", Toast.LENGTH_SHORT).show()
+                            showNotice("Please enter your name first")
                             return@Button
                         }
                         val finalUrl = if (selectedTab == 0) streamUrlInput.trim() else selectedFileUri?.toString() ?: ""
                         if (finalUrl.isBlank()) {
                             val msg = if (selectedTab == 0) "Please paste a video link" else "Please select a video file"
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            showNotice(msg)
                             return@Button
                         }
                         showCreateDialog = false

@@ -39,12 +39,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        lifecycleScope.launch {
-            webSocketClient.infoToastFlow.collectLatest { info ->
-                Toast.makeText(this@MainActivity, info, Toast.LENGTH_SHORT).show()
-            }
-        }
-
         setContent {
             SyncWatchTheme {
                 Surface(
@@ -167,7 +161,8 @@ class MainActivity : ComponentActivity() {
                                 com.syncwatch.app.data.network.StreamUploadManager.cancelUpload()
                                 webSocketClient.disconnect()
                             },
-                            syncEngine = syncEngine
+                            syncEngine = syncEngine,
+                            infoFlow = webSocketClient.infoToastFlow
                         )
                     }
                 }
