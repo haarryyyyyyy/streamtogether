@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -32,28 +33,11 @@ fun ParticipantListDialog(
     isCurrentHost: Boolean,
     currentGuestId: String,
     mediaTitle: String = "",
-    currentPositionSec: Double = 0.0,
-    totalDurationSec: Double = 0.0,
     isPlaying: Boolean = false,
+    onSyncRoom: () -> Unit = {},
     onKickParticipant: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    fun formatTimestamp(seconds: Double): String {
-        val totalSec = Math.max(0L, seconds.toLong())
-        val hours = totalSec / 3600
-        val minutes = (totalSec % 3600) / 60
-        val secs = totalSec % 60
-        return if (hours > 0) {
-            String.format(Locale.getDefault(), "%02d:%02d:%02d", hours, minutes, secs)
-        } else {
-            String.format(Locale.getDefault(), "%02d:%02d", minutes, secs)
-        }
-    }
-
-    val progress = if (totalDurationSec > 0) {
-        (currentPositionSec / totalDurationSec).toFloat().coerceIn(0f, 1f)
-    } else 0f
-
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = DarkSurface,
@@ -76,7 +60,7 @@ fun ParticipantListDialog(
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                // Movie Info & Live Timestamp Card
+                // Movie Info & Live Sync Card
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -131,40 +115,37 @@ fun ParticipantListDialog(
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                        // Timestamp Row
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Timestamp",
-                                fontSize = 11.sp,
-                                color = TextMuted,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = "${formatTimestamp(currentPositionSec)} / ${formatTimestamp(totalDurationSec)}",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = AccentCyan
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        // Mini progress bar
-                        LinearProgressIndicator(
-                            progress = { progress },
+                        // Small Automatic Sync Button
+                        Button(
+                            onClick = { onSyncRoom() },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp)),
-                            color = AccentCyan,
-                            trackColor = DarkSurface
-                        )
+                                .height(34.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Sync,
+                                    contentDescription = "Sync Room",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Sync Everyone to Exact Duration",
+                                    color = Color.Black,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
 

@@ -107,7 +107,6 @@ class SyncWebSocketClient(
         if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             _connectionStatus.value = ConnectionStatus.RECONNECTING
-            _infoToastFlow.emit("Reconnecting...")
             
             var attempt = 0
             while (autoReconnectEnabled && currentRoomCode.isNotEmpty() && _connectionStatus.value != ConnectionStatus.CONNECTED) {
@@ -123,7 +122,6 @@ class SyncWebSocketClient(
                             guestId = currentGuestId,
                             displayName = currentDisplayName
                         )
-                        scope.launch { _infoToastFlow.emit("Back in sync") }
                     }
                     break
                 } catch (e: Exception) {

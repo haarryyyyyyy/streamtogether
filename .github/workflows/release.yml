@@ -54,7 +54,7 @@ jobs:
       - name: 🏷️ Determine Release Tag & Version
         id: vars
         run: |
-          VERSION_NAME=$(grep -o 'versionName = "[^"]*"' android/app/build.gradle.kts | cut -d '"' -f 2 || echo "1.9.0")
+          VERSION_NAME=$(grep -o 'versionName = "[^"]*"' android/app/build.gradle.kts | cut -d '"' -f 2 || echo "2.0.0")
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
           else
@@ -81,14 +81,12 @@ jobs:
           body: |
             ## 🎬 WatchTogether — Release ${{ steps.vars.outputs.tag_name }}
 
-            ### ✨ What's New in this Release:
-            - **Seamless Guest Playback**: Fixed player feedback loop; guest devices automatically synchronize and play without permission errors.
-            - **Extensive Audio Codec Support**: Automatic software fallback for AC3, EAC3, DTS, Opus, and multi-channel audio tracks.
-            - **6-Digit Numeric Room Codes**: Simple 6-digit room codes (e.g., `849201`) with direct numeric keypad input.
-            - **Fullscreen Rotation Button**: Instant toggle between YouTube-style Portrait (with live chat below) and Landscape Fullscreen theater view.
-            - **Zero Onboarding Friction**: No registration, no login, no passwords. Open & watch in seconds!
-            - **Server-Authoritative Sync**: NTP clock calibration with dynamic micro-drift speed ramping.
-            - **Live Text Chat & Host Controls**: Clean real-time messaging, host permissions, and kick management.
-
-            ### 📲 Download & Install:
-            Download the attached `WatchTogether-${{ steps.vars.outputs.tag_name }}.apk` below and install directly on your Android device!
+            ### 🚀 Major Highlights in Version 2.0:
+            - **Permanent Stable Signing Key**: Fixed signature conflicts across all future updates.
+            - **Eliminated Long-Movie Playback Drift**: Host periodic heartbeat continuously anchors playback state so guests stay perfectly synchronized frame-for-frame throughout 2-3 hour movies.
+            - **Coordinated Seek Pre-buffering Gate**: When seeking, all devices pause and pre-buffer before resuming playback simultaneously in lockstep.
+            - **Custom Caption / Subtitle Rendering**: Embedded subtitle selection dialog with default OFF state and high-contrast captions.
+            - **Watching Now Live Sync Button**: Instant one-tap synchronization for all participants to the exact current duration.
+            - **Swipe Gestures & Lock Controls**: Left swipe for brightness HUD, right swipe for volume HUD, and lock controls in fullscreen.
+            - **In-Player Overlay Live Chat**: Clean stacked floating chat overlay in landscape fullscreen.
+            - **Zero Onboarding Friction**: No accounts, passwords, or emails. Instant 6-digit numeric room codes.

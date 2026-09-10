@@ -442,21 +442,30 @@ fun RoomScreen(
     fun toggleSubtitles() {
         triggerUserInteraction()
         val currentParams = exoPlayer.trackSelectionParameters
-        val currentlyDisabled = currentParams.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+        val currentlyDisabled = currentParams.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT) || !areSubtitlesEnabled
 
         if (currentlyDisabled) {
-            exoPlayer.trackSelectionParameters = currentParams.buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                .setPreferredTextLanguage("en")
-                .build()
+            val textGroup = tracksState.groups.firstOrNull { it.type == C.TRACK_TYPE_TEXT }
+            if (textGroup != null) {
+                exoPlayer.trackSelectionParameters = currentParams.buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    .setOverrideForType(TrackSelectionOverride(textGroup.mediaTrackGroup, listOf(0)))
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                    .build()
+            } else {
+                exoPlayer.trackSelectionParameters = currentParams.buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                    .setPreferredTextLanguage("en")
+                    .build()
+            }
             areSubtitlesEnabled = true
-            showNotice("Subtitles Enabled")
         } else {
             exoPlayer.trackSelectionParameters = currentParams.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
             areSubtitlesEnabled = false
-            showNotice("Subtitles Disabled")
         }
     }
 
@@ -464,7 +473,6 @@ fun RoomScreen(
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = ClipData.newPlainText("WatchTogether Room Code", roomState.pin)
         clipboard.setPrimaryClip(clip)
-        showNotice("Room Code copied: ${roomState.pin}")
     }
 
     fun shareRoomCode() {
@@ -674,7 +682,6 @@ fun RoomScreen(
                                     isControlsLocked = true
                                     controlsVisible = false
                                     isUnlockButtonVisible = true
-                                    showNotice("Controls Locked")
                                 }) {
                                     Icon(
                                         imageVector = Icons.Filled.LockOpen,
@@ -881,7 +888,6 @@ fun RoomScreen(
                             .clickable {
                                 isControlsLocked = false
                                 controlsVisible = true
-                                showNotice("Controls Unlocked")
                             }
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -1585,9 +1591,11 @@ fun RoomScreen(
             isCurrentHost = roomState.isHost,
             currentGuestId = myGuestId,
             mediaTitle = roomState.mediaTitle,
-            currentPositionSec = currentPosSec,
-            totalDurationSec = totalDurationSec,
             isPlaying = roomState.isPlaying,
+            onSyncRoom = {
+                val currentSec = exoPlayer.currentPosition / 1000.0
+                handleSeekTo(currentSec)
+            },
             onKickParticipant = { targetId ->
                 onKickParticipant(targetId)
             },
@@ -1850,7 +1858,6 @@ fun RoomScreen(
                                                 .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(tIdx)))
                                                 .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
                                                 .build()
-                                            showNotice("Audio switched to $label")
                                         }
                                     }
                             ) {
@@ -1924,10 +1931,10 @@ fun RoomScreen(
                                 .padding(vertical = 3.dp)
                                 .clickable {
                                     exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                                         .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                                         .build()
                                     areSubtitlesEnabled = false
-                                    showNotice("Subtitles turned off")
                                 }
                         ) {
                             Row(
@@ -1964,11 +1971,11 @@ fun RoomScreen(
                                         val group = tracksState.groups.getOrNull(gIdx)
                                         if (group != null) {
                                             exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+                                                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                                                 .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, listOf(tIdx)))
                                                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                                                 .build()
                                             areSubtitlesEnabled = true
-                                            showNotice("Subtitles: $label")
                                         }
                                     }
                             ) {
