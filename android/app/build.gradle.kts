@@ -8,12 +8,20 @@ android {
     compileSdk = 34
     buildToolsVersion = "34.0.0"
 
+    val appVersionName = (project.findProperty("versionName") as? String)
+        ?: System.getenv("APP_VERSION_NAME")
+        ?: "2.0.0"
+
+    val appVersionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull()
+        ?: System.getenv("APP_VERSION_CODE")?.toIntOrNull()
+        ?: 200
+
     defaultConfig {
         applicationId = "com.syncwatch.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 200
-        versionName = "2.0.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -53,6 +61,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"

@@ -3,6 +3,7 @@ package com.syncwatch.app.data.network
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.syncwatch.app.BuildConfig
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -16,7 +17,8 @@ data class UpdateInfo(
 
 object GitHubUpdateChecker {
     private const val GITHUB_REPO = "haarryyyyyyy/streamtogether"
-    private const val CURRENT_VERSION = "v1.9.0"
+    val CURRENT_VERSION: String
+        get() = "v${BuildConfig.VERSION_NAME}"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)

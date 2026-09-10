@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import com.syncwatch.app.data.network.GitHubUpdateChecker
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -272,7 +273,7 @@ fun HomeScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "v1.9.0",
+                                text = GitHubUpdateChecker.getCurrentVersion(),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = AccentCyan
@@ -311,7 +312,7 @@ fun HomeScreen(
                                 Column {
                                     if (updateInfo.hasUpdate) {
                                         Text(
-                                            text = "A new version (${updateInfo.latestVersion}) is available on GitHub. Your current version is v1.9.0.",
+                                            text = "A new version (${updateInfo.latestVersion}) is available on GitHub. Your current version is ${GitHubUpdateChecker.getCurrentVersion()}.",
                                             color = TextSecondary,
                                             fontSize = 13.sp
                                         )
@@ -327,7 +328,7 @@ fun HomeScreen(
                                         }
                                     } else {
                                         Text(
-                                            text = "StreamTogether v1.9.0 is the latest version. Enjoy synchronized streaming!",
+                                            text = "WatchTogether ${GitHubUpdateChecker.getCurrentVersion()} is the latest version. Enjoy synchronized streaming!",
                                             color = TextSecondary,
                                             fontSize = 13.sp
                                         )

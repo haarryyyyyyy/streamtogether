@@ -177,7 +177,15 @@ fun RoomScreen(
         }
     }
 
-    var isPlayerBuffering by remember { mutableStateOf(false) }
+    val effectiveMediaUrl = remember(roomState.mediaUrl, localHostFileUri) {
+        if (roomState.isHost && localHostFileUri != null) {
+            localHostFileUri.toString()
+        } else {
+            roomState.mediaUrl
+        }
+    }
+
+    var isPlayerBuffering by remember(effectiveMediaUrl) { mutableStateOf(effectiveMediaUrl.isNotEmpty()) }
 
     // Transient in-player text overlay for incoming chats in fullscreen/landscape mode
     data class TransientChat(val id: String, val sender: String, val text: String)
@@ -211,14 +219,6 @@ fun RoomScreen(
             toggleOrientation()
         } else {
             showExitConfirmDialog = true
-        }
-    }
-
-    val effectiveMediaUrl = remember(roomState.mediaUrl, localHostFileUri) {
-        if (roomState.isHost && localHostFileUri != null) {
-            localHostFileUri.toString()
-        } else {
-            roomState.mediaUrl
         }
     }
 
@@ -278,7 +278,7 @@ fun RoomScreen(
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                val isBuffering = playbackState == Player.STATE_BUFFERING
+                val isBuffering = playbackState == Player.STATE_BUFFERING || (playbackState == Player.STATE_IDLE && effectiveMediaUrl.isNotEmpty())
                 isPlayerBuffering = isBuffering
                 onBufferingChanged(isBuffering)
             }
@@ -547,8 +547,9 @@ fun RoomScreen(
                         if (isLandscapeMode && !isControlsLocked) {
                             detectDragGestures(
                                 onDragStart = { offset ->
-                                    val isLeft = offset.x < (playerContainerSize.width / 2f)
-                                    if (isLeft) {
+                                    val width = playerContainerSize.width.toFloat().coerceAtLeast(1f)
+                                    val edgeThreshold = width * 0.22f
+                                    if (offset.x <= edgeThreshold) {
                                         activeSwipeType = SwipeGestureType.BRIGHTNESS
                                         val currentB = activity?.window?.attributes?.screenBrightness ?: -1f
                                         swipeBrightnessLevel = if (currentB >= 0f) currentB else {
@@ -556,47 +557,58 @@ fun RoomScreen(
                                                 Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
                                             } catch (e: Exception) { 0.5f }
                                         }
-                                    } else {
+                                        isSwipeHudVisible = true
+                                        lastInteractionTime = System.currentTimeMillis()
+                                    } else if (offset.x >= width - edgeThreshold) {
                                         activeSwipeType = SwipeGestureType.VOLUME
                                         val maxV = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
                                         val curV = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
                                         swipeVolumeLevel = curV.toFloat() / maxV.toFloat()
+                                        isSwipeHudVisible = true
+                                        lastInteractionTime = System.currentTimeMillis()
+                                    } else {
+                                        activeSwipeType = null
+                                        isSwipeHudVisible = false
                                     }
-                                    isSwipeHudVisible = true
-                                    lastInteractionTime = System.currentTimeMillis()
                                 },
                                 onDragEnd = {
-                                    swipeHudScope.launch {
-                                        delay(1200)
-                                        isSwipeHudVisible = false
-                                        activeSwipeType = null
+                                    if (activeSwipeType != null) {
+                                        swipeHudScope.launch {
+                                            delay(1200)
+                                            isSwipeHudVisible = false
+                                            activeSwipeType = null
+                                        }
                                     }
                                 },
                                 onDragCancel = {
-                                    swipeHudScope.launch {
-                                        delay(1200)
-                                        isSwipeHudVisible = false
-                                        activeSwipeType = null
+                                    if (activeSwipeType != null) {
+                                        swipeHudScope.launch {
+                                            delay(1200)
+                                            isSwipeHudVisible = false
+                                            activeSwipeType = null
+                                        }
                                     }
                                 },
                                 onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    lastInteractionTime = System.currentTimeMillis()
-                                    val height = playerContainerSize.height.coerceAtLeast(1).toFloat()
-                                    val delta = -dragAmount.y / (height * 0.75f)
+                                    if (activeSwipeType != null) {
+                                        change.consume()
+                                        lastInteractionTime = System.currentTimeMillis()
+                                        val height = playerContainerSize.height.coerceAtLeast(1).toFloat()
+                                        val delta = -dragAmount.y / (height * 0.75f)
 
-                                    if (activeSwipeType == SwipeGestureType.BRIGHTNESS) {
-                                        swipeBrightnessLevel = (swipeBrightnessLevel + delta).coerceIn(0.01f, 1.0f)
-                                        activity?.window?.let { win ->
-                                            val lp = win.attributes
-                                            lp.screenBrightness = swipeBrightnessLevel
-                                            win.attributes = lp
+                                        if (activeSwipeType == SwipeGestureType.BRIGHTNESS) {
+                                            swipeBrightnessLevel = (swipeBrightnessLevel + delta).coerceIn(0.01f, 1.0f)
+                                            activity?.window?.let { win ->
+                                                val lp = win.attributes
+                                                lp.screenBrightness = swipeBrightnessLevel
+                                                win.attributes = lp
+                                            }
+                                        } else if (activeSwipeType == SwipeGestureType.VOLUME) {
+                                            val maxV = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                            swipeVolumeLevel = (swipeVolumeLevel + delta).coerceIn(0f, 1f)
+                                            val targetIndex = (swipeVolumeLevel * maxV).roundToInt().coerceIn(0, maxV)
+                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetIndex, 0)
                                         }
-                                    } else if (activeSwipeType == SwipeGestureType.VOLUME) {
-                                        val maxV = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-                                        swipeVolumeLevel = (swipeVolumeLevel + delta).coerceIn(0f, 1f)
-                                        val targetIndex = (swipeVolumeLevel * maxV).roundToInt().coerceIn(0, maxV)
-                                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetIndex, 0)
                                     }
                                 }
                             )
